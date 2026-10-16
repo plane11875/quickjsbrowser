@@ -1,0 +1,118 @@
+{
+  "deployment": {
+    "version": "b21fd4f0-6b1b-4520-9672-1467945af26f",
+    "at": "2026-10-16T04:54:13.554158+00:00"
+  },
+  "cdp_cases": [
+    {
+      "target": "minimal inline float",
+      "sid": "regression-790f03a1-3b48-4aec-ae7c-4c6cb5b09a74",
+      "navigationMs": 22.668030999999928,
+      "screenshotMs": 220.3677869999999,
+      "bytes": 7581,
+      "title": ""
+    },
+    {
+      "target": "https://example.com",
+      "sid": "regression-429f3a16-9599-4dfd-ba96-08f616c83236",
+      "navigationMs": 66.73234700000012,
+      "screenshotMs": 480.03780400000005,
+      "bytes": 57046,
+      "title": "Example Domain"
+    },
+    {
+      "target": "https://linux.do/t/topic/3029893",
+      "sid": "regression-3d70ce11-9a94-4458-970d-9c9137af35d0",
+      "navigationMs": 16255.939469,
+      "screenshotMs": 1116.509729999998,
+      "bytes": 106453,
+      "title": "claude桌面版原生 SSH会封号吗 - 开发调优 - LINUX DO"
+    }
+  ],
+  "platform": [
+    {
+      "sid": "regression-3d70ce11-9a94-4458-970d-9c9137af35d0",
+      "timestamp": 1792126593456,
+      "event_type": "fetch",
+      "outcome": "ok",
+      "cpu_ms": 9,
+      "wall_ms": 72666,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-3d70ce11-9a94-4458-970d-9c9137af35d0",
+      "timestamp": 1792126521348,
+      "event_type": "fetch",
+      "outcome": "ok",
+      "cpu_ms": 13563,
+      "wall_ms": 18042,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-3d70ce11-9a94-4458-970d-9c9137af35d0",
+      "timestamp": 1792126520495,
+      "event_type": "fetch",
+      "outcome": null,
+      "cpu_ms": null,
+      "wall_ms": null,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-429f3a16-9599-4dfd-ba96-08f616c83236",
+      "timestamp": 1792126503404,
+      "event_type": "fetch",
+      "outcome": "ok",
+      "cpu_ms": 1,
+      "wall_ms": 33,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-429f3a16-9599-4dfd-ba96-08f616c83236",
+      "timestamp": 1792126503391,
+      "event_type": "fetch",
+      "outcome": "ok",
+      "cpu_ms": 894,
+      "wall_ms": 1800,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-429f3a16-9599-4dfd-ba96-08f616c83236",
+      "timestamp": 1792126502181,
+      "event_type": "fetch",
+      "outcome": null,
+      "cpu_ms": null,
+      "wall_ms": null,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-790f03a1-3b48-4aec-ae7c-4c6cb5b09a74",
+      "timestamp": 1792126499797,
+      "event_type": "fetch",
+      "outcome": "ok",
+      "cpu_ms": 1,
+      "wall_ms": 40,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-790f03a1-3b48-4aec-ae7c-4c6cb5b09a74",
+      "timestamp": 1792126499788,
+      "event_type": "fetch",
+      "outcome": "ok",
+      "cpu_ms": 448,
+      "wall_ms": 672,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    },
+    {
+      "sid": "regression-790f03a1-3b48-4aec-ae7c-4c6cb5b09a74",
+      "timestamp": 1792126499620,
+      "event_type": "fetch",
+      "outcome": null,
+      "cpu_ms": null,
+      "wall_ms": null,
+      "version": "b21fd4f0-6b1b-4520-9672-1467945af26f"
+    }
+  ],
+  "homepage": {
+    "outcome": "upstream HTTP 403 challenge before rendering"
+  }
+}
