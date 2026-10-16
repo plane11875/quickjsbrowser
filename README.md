@@ -2,35 +2,17 @@
 
 Cloudflare Workers 上的 QuickJS/WASM 浏览器服务：QuickJS 执行脚本，linkedom 提供 JavaScript DOM，Blitz 负责 HTML/CSS 布局和截图。提供 HTTP API 与 CDP 子集。
 
-## 线上截图与部署状态
+## 真实网站截图：linux.do/t/topic/2999210
 
-2026-10-16 已部署分批加载版本，Worker 版本为 `1bad7eb5-3c64-4a02-80e2-6979992ee056`（运行代码 `9ecba45`）。以下 PNG 均由真实 Worker 的 `Page.captureScreenshot` 生成。
+测试地址：[https://linux.do/t/topic/2999210](https://linux.do/t/topic/2999210)。页面标题为「浅试 pi codemode，可能确实省一点 tokens？」。
 
-### 点击改变 DOM 与 CSS
+下面是线上 Worker 直接访问该地址后，由 `Page.captureScreenshot` 输出的 **1024 × 768 原始截图**。访问使用指定的 SNI 中继，显式开启页面 JavaScript，分批继续加载后再截图。
 
-同一个页面，点击 Change 后，红色方块变成绿色，文字从 before 变为 after，宽度从 120px 变为 240px。
+![真实 Worker 渲染 linux.do 帖子 2999210 的当前结果](docs/images/worker-linux-topic-2999210.png)
 
-| 点击前 | 点击后 |
-| --- | --- |
-| ![Worker 截图：点击前的红色方块](docs/images/resume-worker-before.png) | ![Worker 截图：点击后的绿色方块](docs/images/resume-worker-after-click.png) |
+**当前结果仍是静态回退，完整 Discourse 应用未运行成功。** 93 个渲染资源已下载、未报告资源失败；但中文语言包 `zh_CN/main.js` 超过本项目设置的 512 KiB 单脚本上限，管线在执行前终止，页面脚本执行数为 0。这张图不能作为完整网站兼容通过的证明。
 
-点击 Next page 链接后，CDP 导航到新页面：
-
-<img src="docs/images/resume-worker-next-page.png" alt="Worker 截图：点击链接后到达下一页" width="640">
-
-### linux.do 页面
-
-通过指定的 SNI 中继访问并截图。此例使用现有静态页面策略，展示当前 CSS 与排版效果；尚未验证完整 Discourse 应用的脚本执行。
-
-![Worker 截图：linux.do 当前渲染结果](docs/images/resume-worker-linux-sni.png)
-
-### 88 个资源分批加载
-
-同一条 CDP 连接加载 45 个 CSS 与 43 个 JS，按 40、40、8 三批完成。前两批返回 pending，最后才执行脚本并发送页面加载完成事件。下面是简化测试页：绿色区域宽 123px，数字 43 是脚本执行次数；重复继续不会增加次数。
-
-<img src="docs/images/resume-worker-resumable-88.png" alt="88 个资源分批完成后的测试页：绿色区域显示 43" width="512">
-
-加载期间 DOM、资源和脚本准备进度保留在 Durable Object 内存中。用 `Browser.continueLoading({id, requests:40})` 继续，详见[分批加载接口与线上验证](docs/resumable-loading.md)。完整本地测试、6 项渲染回归与 6 个线上场景均已通过。
+测试时间：2026-10-16 15:56 UTC。Worker 已部署，版本 `1bad7eb5-3c64-4a02-80e2-6979992ee056`，运行代码 `9ecba45`。详见[真实站点测试结果与复现方式](docs/real-site-2999210.md)。
 
 ## 本次修复
 
