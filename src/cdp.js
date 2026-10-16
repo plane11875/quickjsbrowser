@@ -344,7 +344,7 @@ export class CdpConnection {
       await S.prepareLayout(html,S.url,this.metrics.width,this.metrics.height);
       const r=S.engine.callGlobal('__input_mouse',JSON.stringify(params));if(!r.ok)throw new Error(r.error||'input dispatch failed');S.pump();return {};
     },
-    'Browser.setProxy':function(params){return {proxy:this.session.configureProxy(params.proxy??params.server??null)};},
+    'Browser.setProxy':function(params){return {proxy:this.session.configureProxy(params.proxy??params.server??((params.ip||params.host)?params:null))};},
     // ---- Browser ----
     'Browser.getVersion': () => ({
       protocolVersion: '1.3',

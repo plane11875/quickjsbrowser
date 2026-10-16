@@ -70,7 +70,7 @@ export default {
 
 function cdpWsUrl(url, key) {
   const q=new URLSearchParams({key,s:url.searchParams.get('s')||'default'});
-  if(url.searchParams.has('proxy'))q.set('proxy',url.searchParams.get('proxy'));
+  for(const name of ['proxy','proxy_ip','proxy_port'])if(url.searchParams.has(name))q.set(name,url.searchParams.get(name));
   return `wss://${url.host}/cdp?${q}`;
 }
 

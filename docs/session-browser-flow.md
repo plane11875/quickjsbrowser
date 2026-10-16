@@ -10,30 +10,37 @@ Direct access is the default. There is no automatic relay fallback. A selected
 proxy applies to documents, redirects, scripts, page fetches, CSS, fonts and images.
 Proxy failure returns an error and never triggers a direct request.
 
-Pass a URL-encoded proxy URL when opening the CDP WebSocket:
+The default proxy configuration wraps this project's existing self-implemented
+SNI/TLS relay. An IP and port identify the relay endpoint; they do not imply that
+the endpoint speaks HTTP CONNECT or SOCKS5.
+
+Pass an endpoint in the CDP WebSocket URL:
 
 ```js
 const endpoint = new URL('wss://quickjsbrowser.berry55.workers.dev/cdp');
 endpoint.searchParams.set('key', key);
 endpoint.searchParams.set('s', crypto.randomUUID());
-endpoint.searchParams.set('proxy', 'http://203.0.113.10:8080');
+endpoint.searchParams.set('proxy', '203.0.113.10:2096');
 ```
 
-Or send the project-specific CDP extension before navigation:
+Or send this project-specific CDP extension before navigation:
 
 ```js
-await client.send('Browser.setProxy', {
-  proxy: {type: 'socks5', host: '203.0.113.10', port: 1080,
-          username: 'user', password: 'password'}
-});
+await client.send('Browser.setProxy', {ip: '203.0.113.10', port: 2096});
 ```
 
-Supported proxy protocols are HTTP CONNECT, SOCKS5 with remote DNS and the existing
-SNI relay (`sni://host:port`). Authentication is optional for HTTP/SOCKS5. HTTPS
-websites through HTTP/SOCKS5 use `Socket.startTls({expectedServerHostname})` and
-runtime certificate validation. TLS-encrypted proxy endpoints (`https://proxy`)
-are not implemented. The explicit SNI mode retains the old user-space TLS path,
-which does not provide complete browser certificate authentication.
+`?proxy_ip=203.0.113.10&proxy_port=2096` is also supported. `sni://host:port` is
+an explicit spelling of the same transport. The selected endpoint is shared by
+documents, redirects, scripts, page fetches, CSS, fonts and images. `proxy=direct`
+explicitly selects direct access; omitting a proxy on a new session is also direct.
+
+The interface has proxy semantics while transport remains our own TCP + TLS/SNI +
+HTTP implementation. This legacy TLS path does not provide complete browser
+certificate authentication. Separately, explicitly specifying `type: "http"` or
+`type: "socks5"` selects standard protocol support. These are opt-in alternatives;
+they are not required of a custom relay. HTTPS proxy endpoints themselves are not
+implemented. Native tunnel TLS for those alternatives still needs separate edge
+validation with a compatible endpoint.
 
 Prefer the command for credentials so they are not in a connection URL. Public
 state reports protocol, host, port and an authentication flag, never passwords.
@@ -69,9 +76,9 @@ Existing native/module/navigation and float/CSS renderer suites also run.
 
 An additional Codespace integration check accessed https://example.com through an
 HTTP CONNECT proxy using certificate-verified native TLS. These checks do not prove
-that the Cloudflare edge handles tunnel TLS identically. Deployment credentials
-are required for the separate on-Worker validation; do not label local results as
-production results.
+that the Cloudflare edge handles tunnel TLS identically. The actual Worker interaction and explicit custom-relay tests are recorded in
+[the validation report](session-validation-2026-10-16.md). Standard-protocol tunnel
+TLS has not been claimed as verified on the edge.
 
 This remains a browser subset. Client/offset box metrics and inline client-rect
 fragments are simplified. Observers, iframe contexts, forms, keyboard automation,

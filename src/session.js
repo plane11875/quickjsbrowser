@@ -838,6 +838,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
           return Response.json({ error: 'expected Upgrade: websocket' }, { status: 426 });
         }
         if(u.searchParams.has('proxy'))this.configureProxy(u.searchParams.get('proxy'));
+        else if(u.searchParams.has('proxy_ip')||u.searchParams.has('proxy_port'))this.configureProxy({ip:u.searchParams.get('proxy_ip'),port:Number(u.searchParams.get('proxy_port'))});
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
         server.accept();

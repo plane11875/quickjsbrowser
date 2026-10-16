@@ -4,10 +4,10 @@ export function normalizeProxy(input) {
   if (input == null || input === '' || input === 'direct') return null;
   let p;
   if (typeof input === 'string') {
-    const u = new URL(input);
+    const u = new URL(input.includes('://')?input:'sni://'+input);
     if (!['','/'].includes(u.pathname) || u.search || u.hash) throw new Error('proxy URL must contain only protocol, host and port');
     p = {type:u.protocol.slice(0,-1),host:u.hostname.replace(/^\[|\]$/g,''),port:u.port ? Number(u.port) : u.protocol==='sni:'?443:u.protocol==='socks5:'?1080:80,username:decodeURIComponent(u.username),password:decodeURIComponent(u.password)};
-  } else p = {type:input.type || input.protocol || 'http',host:input.host || input.ip,port:Number(input.port),username:input.username || '',password:input.password || ''};
+  } else p = {type:input.type || input.protocol || 'sni',host:input.host || input.ip,port:Number(input.port),username:input.username || '',password:input.password || ''};
   p.type = p.type.replace(/:$/,'').toLowerCase();
   if (!['http','socks5','sni'].includes(p.type)) throw new Error('unsupported proxy protocol');
   if (typeof p.host !== 'string' || !p.host || /[\s\/@?#]/.test(p.host)) throw new Error('invalid proxy host');

@@ -72,14 +72,15 @@ CDP 仍是子集：对象句柄、多页面隔离、完整 Network 事件等尚�
 Small page applications can use import maps, real DOM observers and bounded asynchronous work. Script inputs, subrequests and execution have explicit budgets; degraded and noscript fallback output is reported to clients. See [capabilities and limits](docs/bounded-browser-capabilities.md) and [deployed validation](docs/bounded-browser-validation-2026-10-16.md).
 
 
-## Explicit proxies and interactive CDP
+## Explicit relay configuration and interactive CDP
 
-Set `?proxy=http%3A%2F%2Fhost%3Aport` on the CDP WebSocket URL, or send the
-project-specific `Browser.setProxy` before navigation. The selected route applies
-to all resources and never falls back to direct access. HTTP CONNECT, SOCKS5 and
-SNI relay endpoints are supported; HTTPS websites use native tunnel TLS for the
-standard proxy protocols.
+Open a CDP session with `?proxy=IP%3Aport`, or send the project-specific command
+`Browser.setProxy({ip, port})` before navigation. This wraps the project's existing
+self-implemented SNI/TLS relay as a browser proxy. The endpoint does not need to
+speak HTTP CONNECT or SOCKS5. Every page resource follows the selected route;
+failures never trigger automatic direct access.
 
 The default viewport is 1024×768. Computed style and geometry query Blitz;
 coordinate mouse events run page handlers and ordinary links navigate.
-See [usage, design, tests and remaining limits](docs/session-browser-flow.md).
+See [usage, design and limits](docs/session-browser-flow.md) and
+[local/deployed validation](docs/session-validation-2026-10-16.md).

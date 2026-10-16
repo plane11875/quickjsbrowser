@@ -23,6 +23,7 @@ await new Promise(r=>proxy.listen(0,'127.0.0.1',r));
 let websocketServer,client;
 try{
  let forwarded;await worker.fetch(new Request('https://worker.test/cdp?key=test&s=chosen&proxy='+encodeURIComponent('socks5://proxy.test:1080'),{headers:{Upgrade:'websocket'}}),{KEY:'test',QJS:{idFromName:name=>name,get:name=>{assert.equal(name,'chosen');return {fetch:request=>{forwarded=new URL(request.url);return Response.json({ok:true});}};}}});assert.equal(forwarded.searchParams.get('proxy'),'socks5://proxy.test:1080','front router must preserve the proxy query');
+ assert.equal(normalizeProxy({ip:'192.0.2.1',port:2096}).type,'sni');assert.equal(normalizeProxy('192.0.2.1:2096').type,'sni');
  const cfg=normalizeProxy({type:'http',ip:'127.0.0.1',port:proxy.address().port,username:'user',password:'secret'});
  assert.equal(publicProxy(cfg).password,undefined);assert.equal(publicProxy(cfg).authenticated,true);
  assert.equal(normalizeProxy('socks5://user:pass@proxy.test:1080').type,'socks5');assert.equal(normalizeProxy('sni://proxy.test:443').type,'sni');
@@ -35,7 +36,8 @@ try{
  client.on('message',raw=>{const frame=JSON.parse(String(raw));frames.push(frame);pending.get(frame.id)?.(frame);});
  await new Promise((resolve,reject)=>{client.once('open',resolve);client.once('error',reject);});
  const command=async(method,params={})=>{const id=++seq;const r=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP response timeout: '+method));},15000);pending.set(id,frame=>{clearTimeout(timer);pending.delete(id);resolve(frame);});client.send(JSON.stringify({id,method,params}));});assert.ok(!r.error,JSON.stringify(r));await c.sendChain;return r.result;};
- await command('Browser.setProxy',{proxy:cfg});
+ await command('Browser.setProxy',{ip:'192.0.2.1',port:2096});assert.equal(s.proxy.type,'sni');
+ s.reset();await command('Browser.setProxy',{proxy:cfg});
  await command('Emulation.setDeviceMetricsOverride',{width:480,height:320,deviceScaleFactor:1,mobile:false});
  await command('Page.enable');await command('Runtime.enable');
  const nav=await command('Page.navigate',{url:'http://fixture.invalid/'});assert.ok(!nav.errorText,JSON.stringify(nav));
