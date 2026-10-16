@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "cd engine && WASI_SDK_PATH=${WASI_SDK_PATH:-$PWD/vendor/wasi-sdk} ./build.sh",
-    "dev": "wrangler dev",
+    "build": "bash engine/build.sh",
     "deploy": "wrangler deploy",
-    "test:local": "node test/local-test.mjs"
+    "test:local": "node test/run-local.mjs",
+    "build:renderer": "bash scripts/build-renderer.sh",
+    "test": "node test/run-local.mjs && node test/renderer-regression.mjs",
+    "test:renderer": "node test/renderer-regression.mjs"
   },
   "devDependencies": {
     "chrome-remote-interface": "^0.34.0",
