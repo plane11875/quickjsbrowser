@@ -4,15 +4,24 @@ Cloudflare Workers 上的 QuickJS/WASM 浏览器服务：QuickJS 执行脚本，
 
 ## 真实网站截图：linux.do/t/topic/2999210
 
-测试地址：[https://linux.do/t/topic/2999210](https://linux.do/t/topic/2999210)。页面标题为「浅试 pi codemode，可能确实省一点 tokens？」。
+测试地址：[https://linux.do/t/topic/2999210](https://linux.do/t/topic/2999210)，标题「浅试 pi codemode，可能确实省一点 tokens？」。通过指定 SNI 中继访问，视口 1024×768，显式执行 JavaScript。
 
-下面是线上 Worker 直接访问该地址后，由 `Page.captureScreenshot` 输出的 **1024 × 768 原始截图**。访问使用指定的 SNI 中继，显式开启页面 JavaScript，分批继续加载后再截图。
+### 解除源码限制后的实际结果
 
-![真实 Worker 渲染 linux.do 帖子 2999210 的当前结果](docs/images/worker-linux-topic-2999210.png)
+512 KiB 单脚本 / 2 MiB 总源码门槛已取消，改用 32 MiB 的总源码内存保护。当前真实站点测试准备了 **14,947,279 字节源码、执行 27 段脚本**；Cloudflare 按独立 Durable Object 统计的**全程累计 CPU 为 23.161496 秒**，超过 10 秒目标。这个数字不是网络等待时间，也不是单条 CDP 消息的耗时。
 
-**当前结果仍是静态回退，完整 Discourse 应用未运行成功。** 93 个渲染资源已下载、未报告资源失败；但中文语言包 `zh_CN/main.js` 超过本项目设置的 512 KiB 单脚本上限，管线在执行前终止，页面脚本执行数为 0。这张图不能作为完整网站兼容通过的证明。
+**完整应用仍未启动成功。** 缺少 `CSS` 浏览器对象，且 `document.referrer` 尚未提供，导致 Discourse 主模块报错；第三方 Google、Stripe 脚本在指定中继上握手失败。下面是真实输出，页面停在加载画面。脚本失败不再自动替换成 noscript 正文。
 
-测试时间：2026-10-16 15:56 UTC。Worker 已部署，版本 `1bad7eb5-3c64-4a02-80e2-6979992ee056`，运行代码 `9ecba45`。详见[真实站点测试结果与复现方式](docs/real-site-2999210.md)。
+![解除源码限制后的真实 Worker 截图：应用仍停在加载画面](docs/images/worker-linux-topic-2999210-unrestricted.png)
+
+<details>
+<summary>查看解除限制前的静态回退截图（旧版，不能代表完整网站运行成功）</summary>
+
+![旧版静态回退的真实帖子正文截图](docs/images/worker-linux-topic-2999210.png)
+
+</details>
+
+2026-10-16 已部署 Worker 版本 `7e0c06bf-85fc-499a-9dae-43e17fef3048`，运行代码 `7bb44b5`。详细数据与复现命令见[真实站点测试报告](docs/real-site-2999210.md)。
 
 ## 本次修复
 
