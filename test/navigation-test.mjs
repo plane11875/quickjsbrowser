@@ -72,3 +72,20 @@ assert.equal(Buffer.from(png).subarray(0,8).toString('hex'), '89504e470d0a1a0a')
 assert.ok(resources.includes('https://assets.example/a.css'));
 assert.ok(resources.every((url) => !url.endsWith('.js')));
 console.log('PASS renderer loads CSS without downloading unused script preloads');
+
+const toggled=session();
+toggled.smartFetch=async()=>new Response('<html><head><script>globalThis.pageEnabled=true</script></head><body>toggle</body></html>');
+const toggleFrames=[];
+const toggleCdp=new CdpConnection(toggled,{send:f=>toggleFrames.push(JSON.parse(f))});
+async function command(id,method,params){toggleCdp.onMessage(JSON.stringify({id,method,params}));await toggleCdp.chain;await toggleCdp.sendChain;}
+await command(10,'Emulation.setScriptExecutionDisabled',{value:false});
+assert.equal(toggleCdp.scriptExecutionDisabled,false);
+await command(11,'Page.navigate',{url:'https://linux.do/t/topic/1'});
+assert.equal(toggled.pageStatus.mode,'bounded');
+assert.equal(value(toggled,'pageEnabled'),true);
+await command(12,'Emulation.setScriptExecutionDisabled',{value:true});
+await command(13,'Page.navigate',{url:'https://example.com/'});
+assert.equal(toggled.pageStatus.mode,'fast');
+assert.equal(value(toggled,'typeof pageEnabled'),'undefined');
+toggleCdp.close();toggled.engine.dispose();
+console.log('PASS real CDP script toggle overrides site defaults in both directions');

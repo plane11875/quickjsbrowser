@@ -35,6 +35,7 @@ for(const test of cases){
   }
   const stateUrl=new URL(`/s/${sid}/state`,base);stateUrl.searchParams.set('key',key);
   const state=await (await fetch(stateUrl,{signal:AbortSignal.timeout(4000)})).json();report.page=state.page;
+  if(test.bounded&&!report.unavailable)assert.equal(report.page?.mode,'bounded','CDP script switch did not activate bounded mode');
   if(test.expected){assert.ok(!report.unavailable,'fixture document unavailable');assert.equal(report.page?.status,test.expected,JSON.stringify(report.page));}
   if(test.name==='module-app'){assert.equal(report.meta.out,'Bounded module app ready');assert.equal(report.meta.observed,'MutationObserver delivered');}
   if(test.name==='oversized'||test.name==='loop')assert.equal(report.meta.out,'Original content');

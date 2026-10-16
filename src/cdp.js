@@ -535,7 +535,6 @@ export class CdpConnection {
       return {};
     },
     'Emulation.setUserAgentOverride': () => ({}),
-    'Emulation.setScriptExecutionDisabled': () => ({}),
     'Emulation.setFocusEmulationEnabled': () => ({}),
     'Emulation.setLocaleOverride': () => ({}),
     'Emulation.setTimezoneOverride': () => ({}),
