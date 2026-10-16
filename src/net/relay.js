@@ -10,6 +10,7 @@
 //
 // 协议参考 gpt2api/src/transport.js（同一个主人，同一套反代）。
 import { connect } from 'cloudflare:sockets';
+import { negotiateProxy } from './proxy.js';
 import { makeCFStream, tlsRequest } from './sni-tls.js';
 import { buildH2Request, parseH2Response, h2StreamEnded } from './h2.js';
 
@@ -65,16 +66,27 @@ function dechunk(buf) {
 
 /** 单跳：连反代 → 手搓 TLS(SNI=目标) → HTTP/1.1，收完整个响应 */
 async function once(relay, target, method, headers, body, opts, signal) {
-  const [relayHost, relayPort] = relay.split(':');
+  const proxy = typeof relay === 'object' ? relay : null;
+  const [relayHost, relayPort] = proxy ? [proxy.host,proxy.port] : relay.split(':');
   let stream = null, sock = null, onAbort;
   const aborted = new Promise((_,reject)=>{
     onAbort=()=>{try{stream?.destroy();sock?.close();}catch{}reject(signal.reason||new Error('relay aborted'));};
     if(signal?.aborted)onAbort();else signal?.addEventListener('abort',onAbort,{once:true});
   });
   try {
-    sock = connect({ hostname: relayHost, port: parseInt(relayPort, 10) || 443 });
+    sock = connect({ hostname: relayHost, port: parseInt(relayPort, 10) || 443 }, {secureTransport:proxy&&proxy.type!=='sni'?'starttls':'off'});
     await Promise.race([sock.opened,aborted]);
     stream = makeCFStream(sock);
+    if(proxy && proxy.type!=='sni'){
+      stream=await Promise.race([negotiateProxy(stream,proxy,target),aborted]);
+      if(target.protocol==='https:'){
+        stream.release();sock=sock.startTls({expectedServerHostname:target.hostname});
+        await Promise.race([sock.opened,aborted]);stream=makeCFStream(sock);
+      }
+    }
+    headers=Object.fromEntries(new Headers(headers));
+    for(const key of ['host','connection','content-length','proxy-authorization','accept-encoding'])delete headers[key];
+    headers['accept-encoding']='identity';
 
     let headerLines = '';
     for (const [k, v] of Object.entries(headers)) {
@@ -98,8 +110,12 @@ async function once(relay, target, method, headers, body, opts, signal) {
         : null),
     };
 
-    const gen = tlsRequest(stream, target.hostname, method,
-      target.pathname + target.search, headerLines, bodyBytes, tlsOpts);
+    const path=target.pathname+target.search;
+    const gen = target.protocol==='https:'&&(!proxy||proxy.type==='sni') ? tlsRequest(stream,target.hostname,method,path,headerLines,bodyBytes,tlsOpts) : (async function*(){
+      await stream.write(new TextEncoder().encode(method+' '+path+' HTTP/1.1\r\nHost: '+target.host+'\r\nConnection: close\r\n'+headerLines+(bodyBytes?'Content-Length: '+bodyBytes.length+'\r\n':'')+'\r\n'));
+      if(bodyBytes)await stream.write(bodyBytes);
+      for(;;){const b=await stream.read();if(!b)break;yield b;}
+    })();
 
     const dec = new TextDecoder();
     let buf = new Uint8Array(0);
@@ -117,7 +133,7 @@ async function once(relay, target, method, headers, body, opts, signal) {
       if (h2mode) {
         // h2 是长连接，服务器发完不会关；收到流 1 的 END_STREAM 才收手，
         // 否则会一直等下去（实测挂死）。
-        if (buf.length > MAX_BODY) break;
+        if (buf.length > MAX_BODY) throw new Error('proxy response exceeds body limit');
         if (h2StreamEnded(buf)) break;
         continue;
       }
@@ -130,7 +146,7 @@ async function once(relay, target, method, headers, body, opts, signal) {
         }
       }
       if(headerEnd>=0 && contentLength>=0 && buf.length>=headerEnd+4+contentLength)break;
-      if (buf.length > MAX_BODY) break;
+      if (buf.length > MAX_BODY) throw new Error('proxy response exceeds body limit');
     }
 
     if (h2mode) {
@@ -163,16 +179,20 @@ export async function relayFetch(relay, urlStr, { method = 'GET', headers = {}, 
   let m = method;
   let b = body;
   for (let hop = 0; ; hop++) {
+    if(!['http:','https:'].includes(target.protocol))throw new Error('unsupported target scheme');
     const r = await once(relay, target, m, headers, b, tls, signal);
     const loc = r.headers.location;
     if (redirect === 'follow' && r.status >= 300 && r.status < 400 && loc && hop < MAX_REDIRECTS) {
       target = new URL(loc, target);
-      // 3xx 之后按浏览器语义退化成 GET，且不再带 body
-      if (m !== 'GET' && m !== 'HEAD') m = 'GET';
-      b = null;
+      if((r.status===303&&m!=='HEAD')||((r.status===301||r.status===302)&&m==='POST')){m='GET';b=null;}
+      headers=Object.fromEntries(new Headers(headers));
+      if(new URL(urlStr).origin!==target.origin){delete headers.authorization;delete headers.cookie;}
+      if(m==='GET'||m==='HEAD'){delete headers['content-type'];delete headers['content-length'];}
       continue;
     }
-    const resp = new Response(r.body.length ? r.body : null, { status: r.status, headers: r.headers });
+    if(redirect==='error'&&loc&&r.status>=300&&r.status<400)throw new Error('redirect disallowed');
+    if(redirect==='follow'&&loc&&r.status>=300&&r.status<400&&hop>=MAX_REDIRECTS)throw new Error('too many redirects');
+    const resp = new Response(method==='HEAD'||[204,205,304].includes(r.status)?null:r.body.length ? r.body : null, { status: r.status, headers: r.headers });
     // Response.url 是原型上的只读 getter，在实例上定义同名属性即可遮蔽
     Object.defineProperty(resp, 'url', { value: target.toString(), configurable: true });
     return resp;

@@ -28,7 +28,7 @@ function makeWasi() {
 }
 function boot(prelude) {
   const { wasi, st } = makeWasi();
-  const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi });
+  const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi, browser:{layout:()=>-1} });
   st.mem = inst.exports.memory;
   const mem = st.mem;
   inst.exports._initialize();

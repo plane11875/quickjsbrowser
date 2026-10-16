@@ -11,13 +11,10 @@ import { moduleSpecifiers } from './module-resolver.js';
 import { CdpConnection } from './cdp.js';
 import { requestHeaders, guessType } from './fingerprint.js';
 import { relayFetch } from './net/relay.js';
+import { normalizeProxy, publicProxy } from './net/proxy.js';
 
-// 「被反爬挡住」的状态码。CF Bot Management 的挑战页是 403（带 cf-mitigated: challenge），
-// HN 这类自研拦截是 419，限频是 429。这三种换个出口还有救；
-// 404/500 之类是站点对内容的正常回答，重试纯属浪费。
-const BLOCKED_STATUS = new Set([403, 419, 429]);
 import initBlitz, { add_font, set_generic_lead, add_resource, clear_resources,
-  missed_resources, render_png_rgba_no_js, last_panic } from './vendor/pkg/kitesurf_clone.js';
+  missed_resources, render_png_rgba_no_js, last_panic, layout_query } from './vendor/pkg/kitesurf_clone.js';
 import blitzWasm from './vendor/pkg/kitesurf_clone_bg.wasm';
 import { encodePNG } from './vendor/png.js';
 import fontSansReg from './vendor/fonts/sans-regular.ttf';
@@ -56,6 +53,7 @@ const PREFETCH_CONCURRENCY = 6;
 // 截图阶段的资源补抓并发。串行时每个资源一个 RTT，X 页面 50+ 资源直接吃掉
 // 全部墙钟时间；并发后 50 个资源约 5~6 轮完成。
 const RESOURCE_CONCURRENCY = 6;
+let activeResourceSession=null;
 
 function toB64(bytes) {
   let bin = '';
@@ -124,6 +122,11 @@ export class QjsSession {
     this.url = 'about:blank';
     this.storage = { local: {}, session: {} };
     this.cookie = '';
+    this.proxy = null;
+    this.pendingNavigation = null;
+    this.renderAssets=new Map();
+    this.viewport={w:1024,h:768};
+    this.layoutReads=0;
     // 模块源码缓存：url → {text, kind}；null 值 = 已确认取不到（负缓存，
     // 避免每次导航都去撞同一个死链）
     this.modCache = new Map();
@@ -144,7 +147,7 @@ export class QjsSession {
 
   ensure() {
     if (this.engine) return;
-    this.engine = new QjsEngine();
+    this.engine = new QjsEngine({layout:request=>this.syncLayout(request)});
     const b = new Uint8Array(65536);
     crypto.getRandomValues(b);
     this.dispatch({ kind: 'random', b64: toB64(b) });
@@ -189,8 +192,9 @@ export class QjsSession {
         break;
       case 'timer': {
         const delay = Math.min(Math.max(t.payload.delay || 0, 0), 60000);
+        const engine=this.engine;
         setTimeout(() => {
-          if (!this.engine) return;
+          if (!this.engine || this.engine!==engine) return;
           this.dispatch({ kind: 'timer_fire', id: t.payload.id });
           this.pump();
         }, delay);
@@ -200,13 +204,8 @@ export class QjsSession {
         this.ctx.waitUntil(this.hostFetch(t.payload));
         break;
       case 'navigate': {
-        const target = /^https?:/i.test(t.payload.url)
-          ? t.payload.url
-          : new URL(t.payload.url, this.url === 'about:blank' ? 'https://session.local/' : this.url).href;
-        this.url = target;
-        this.pushLoc();
-        this.pushLog(`[navigate] ${target}${t.payload.reload ? ' (reload)' : ''}`);
-        // v1：仅切 URL；完整导航管线（抓 HTML→装载→脚本）属浏览器组件阶段
+        this.pendingNavigation=new URL(t.payload.url,this.url==='about:blank'?'https://session.local/':this.url).href;
+        const conn=this.cdpConns.values().next().value;conn?.requestNavigation();
         break;
       }
       case 'history': {
@@ -248,10 +247,12 @@ export class QjsSession {
   }
 
   async hostFetch(p) {
+    const engine=this.engine;
     try {
+      const target=new URL(p.url,this.url).href;
       // 页面脚本发起的 fetch：套上 Chrome 的同款默认头，页面自己给的头优先生效
       // （真实浏览器就是这样——UA/Accept/Sec-Fetch-* 由浏览器补，页面只能改部分）。
-      const chrome = requestHeaders({ type: 'xhr', url: p.url, referer: this.url, mode: 'cors', origin: true });
+      const chrome = requestHeaders({ type: 'xhr', url: target, referer: this.url, mode: 'cors', origin: true });
       const reqHeaders = { ...chrome };
       for (const [k, v] of Object.entries(p.headers || {})) {
         // 页面显式给的头覆盖浏览器默认值；同名不同大小写按 HTTP 语义覆盖
@@ -259,7 +260,7 @@ export class QjsSession {
         if (key) delete reqHeaders[key];
         reqHeaders[k] = v;
       }
-      const r = await this.smartFetch(p.url, {
+      const r = await this.smartFetch(target, {
         method: p.method,
         headers: reqHeaders,
         body: p.method === 'GET' || p.method === 'HEAD' ? undefined : p.body,
@@ -275,9 +276,11 @@ export class QjsSession {
       } else {
         resp = { ok: r.ok, status: r.status, statusText: r.statusText, url: r.url, headers, base64: toB64(new Uint8Array(await r.arrayBuffer())) };
       }
+      if(this.engine!==engine)return;
       this.dispatch({ kind: 'fetch_resolve', id: p.id, resp });
       this.pump();
     } catch (e) {
+      if(this.engine!==engine)return;
       this.dispatch({ kind: 'fetch_resolve', id: p.id, error: String((e && e.message) || e) });
       this.pump();
     }
@@ -454,8 +457,55 @@ export class QjsSession {
         [fontMono, 'mono'], [fontSc, 'sc'], [fontJp, 'jp'],
       ]) add_font(new Uint8Array(bytes), family);
       for (const [g, fams] of GENERIC_LEAD) set_generic_lead(g, fams);
+      this.blitzInitialized=true;
       return true;
     })());
+  }
+
+  activateResources() {
+    if(activeResourceSession===this)return;
+    clear_resources();
+    for(const [url,bytes] of this.renderAssets)add_resource(url,bytes);
+    activeResourceSession=this;
+  }
+
+  syncLayout(request) {
+    if(!this.blitzInitialized)throw new Error('layout renderer is not ready');
+    if(++this.layoutReads>2048)throw new Error('layout read budget exceeded');
+    this.activateResources();
+    return layout_query(stripScriptBodies(request.html),this.url,this.viewport.w,this.viewport.h,request.selector||'',request.property||'',request.x||0,request.y||0);
+  }
+
+  async prepareLayout(html,base,w=this.viewport.w,h=this.viewport.h) {
+    await this.ensureBlitz();
+    this.viewport={w,h};this.activateResources();
+    this.renderResourcesIncomplete=false;this.renderResourceFailures=0;
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000),tried=new Set();
+    try {
+      for(let pass=0;pass<4;pass++){
+        this.activateResources();
+        layout_query(stripScriptBodies(html),base,w,h,'','',0,0);
+        const todo=missed_resources().filter(u=>!tried.has(u)&&!this.renderAssets.has(u)&&worthFetchingForRender(u));
+        if(!todo.length)break;
+        for(const u of todo)tried.add(u);
+        await this.mapLimit(todo,RESOURCE_CONCURRENCY,async(u)=>{
+          try {
+            const r=await this.smartFetch(u,{redirect:'follow',signal:controller.signal,headers:requestHeaders({type:guessType(u),url:u,referer:base})});
+            if(!r.ok){r.body?.cancel().catch(()=>{});this.renderResourceFailures++;return;}
+            const limit=4*1024*1024;if(+r.headers.get('content-length')>limit)throw new Error('render asset too large');
+            const reader=r.body?.getReader(),chunks=[];let n=0;
+            try{if(reader)for(;;){const r=await reader.read();if(r.done)break;n+=r.value.length;if(n>limit)throw new Error('render asset too large');chunks.push(r.value);}}catch(e){reader?.cancel().catch(()=>{});throw e;}
+            const bytes=new Uint8Array(n);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}
+            let total=0;for(const b of this.renderAssets.values())total+=b.length;if(total+n>16*1024*1024)throw new Error('render asset memory budget exceeded');
+            this.renderAssets.set(u,bytes);this.activateResources();add_resource(u,bytes);
+          }catch(e){this.renderResourceFailures++;}
+        });
+        if(controller.signal.aborted){this.renderResourcesIncomplete=true;break;}
+      }
+    }finally{clearTimeout(timer);}
+    this.activateResources();
+    layout_query(stripScriptBodies(html),base,w,h,'','',0,0);
+    if(missed_resources().some(u=>worthFetchingForRender(u)&&!this.renderAssets.has(u)))this.renderResourcesIncomplete=true;
   }
 
   /** x.com 推文页适配：布局放宽 + zoom（display 裁剪走 DOM 手术，不依赖类名） */
@@ -520,56 +570,10 @@ html { zoom: 1.6 !important; }
     // blitz 不执行 JS，script 体对它只是白白要扫过去的文本。linux.do 的文档 343KB 里
     // 266KB 是内联 JS（33 个 script 标签），占四分之三——裁掉它，渲染输入直接瘦一半以上。
     const html = stripScriptBodies(rawHtml);
-    clear_resources();
-    let rgba = render_png_rgba_no_js(html, baseUrl, w, h);
-    mark(`首轮渲染 (输入 ${(html.length / 1024).toFixed(0)}KB)`);
-    // 资源补抓：并发 + 去重。串行抓 50 个资源 = 50 个 RTT，是截图耗时的主因；
-    // 且前一轮抓失败的 URL 会在下一轮被再次请求，纯属浪费。
-    // maxResources 是站点级闸门：每次出站请求都要付 CPU（连接建立算在同进程里），
-    // 像 linux.do 那样一次要补 87 个资源，直接把自己送进 CPU 上限。
-    const budget = opts.maxResources == null ? Infinity : opts.maxResources;
-    let spent = 0;
-    const tried = new Set();
-    const resourceController=new AbortController();
-    const resourceTimer=setTimeout(()=>resourceController.abort(),2000);
-    this.renderResourcesIncomplete=false;this.renderResourceFailures=0;
-    try {
-    for (let pass = 0; pass < 3 && spent < budget; pass++) {
-      let missed;
-      try { missed = missed_resources(); } catch (e) { break; }
-      if (!missed || !missed.length) break;
-      let todo = missed.filter((u) => !tried.has(u) && worthFetchingForRender(u));
-      for (const u of missed) tried.add(u);
-      if (!todo.length) { this.pushLog(`[resources] pass ${pass + 1}: 无新增，停止`); break; }
-      const room = budget - spent;
-      if (todo.length > room) {
-        this.pushLog(`[resources] 站点限额：本轮 ${todo.length} 个只抓前 ${room} 个（maxResources=${budget}）`);
-        todo = todo.slice(0, room);
-      }
-      spent += todo.length;
-      this.pushLog(`[resources] pass ${pass + 1}: ${todo.length} 新增待抓（共 ${missed.length} missed）`);
-      let added = 0;
-      await this.mapLimit(todo, RESOURCE_CONCURRENCY, async (u) => {
-        if(resourceController.signal.aborted)return;
-        try {
-          // 资源补抓：按扩展名判类型（css/image/font/js 的头各不相同），Referer 用文档 URL
-          const rr = await this.smartFetch(u, {
-            redirect: 'follow',
-            headers: requestHeaders({ type: guessType(u), url: u, referer: baseUrl, mode: 'no-cors' }),
-            signal:resourceController.signal,
-          }, { allowRelay: false });
-          if (rr.ok) { add_resource(u, new Uint8Array(await rr.arrayBuffer())); added++; }
-          else this.renderResourceFailures++;
-        } catch (e) { this.renderResourceFailures++; }
-      });
-      // 全军覆没时重渲染毫无意义（画面不会变化），直接进入收尾，省一次全量渲染。
-      mark(`pass${pass + 1} 抓 ${todo.length} 个资源`);
-      if (!added) { this.pushLog(`[resources] pass ${pass + 1}: 无新增成功，跳过重渲染`); break; }
-      rgba = render_png_rgba_no_js(html, baseUrl, w, h);
-      mark(`pass${pass + 1} 重渲染 (抓了 ${todo.length} 个)`);
-    }
-    } finally {clearTimeout(resourceTimer);}
-    if(resourceController.signal.aborted){this.renderResourcesIncomplete=true;this.pushLog('[resource-budget] 2000ms network window exhausted');}
+    await this.prepareLayout(html,baseUrl,w,h);
+    this.activateResources();
+    const rgba=render_png_rgba_no_js(html,baseUrl,w,h);
+    mark('render');
     let buf = new Uint8Array(rgba);
     if (trim) {
       // 内容检测裁剪：跳过透明像素（空白区是透明黑），剩余亮度<210 算内容；内容外保留 40px 边距
@@ -616,12 +620,13 @@ html { zoom: 1.6 !important; }
 
   /** 页面脚本管线：抽脚本 → 预取 → DOM 建立 → 经典脚本 → 模块 → settle → 序列化 */
   async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport } = {}) {
+    this.pendingNavigation=null;
     const lim=siteLimitsFor(baseUrl);
     const enabled=executeScripts ?? lim?.js!==false;
     // A new document gets a fresh VM: old globals, pending jobs and module
     // records must not survive navigation or an aborted page application.
     if(this.engine){this.engine.dispose();this.engine=null;}
-    this.ensure();this.url=baseUrl;this.pushLoc();if(viewport)this.dispatch({kind:'viewport',...viewport});
+    this.ensure();this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
     this.dispatch({kind:'load_dom',html,baseUrl});
     const early=()=>{
       for(const item of this.cdpEarlyScripts||[]){
@@ -633,6 +638,7 @@ html { zoom: 1.6 !important; }
     early();
     const manifest=this.engine.callGlobal('__page_manifest').value;
     if(!manifest)throw new Error('DOM manifest failed');
+    await this.prepareLayout(html,baseUrl);
     if(enabled){
       // On failure rebuild the original DOM and trusted automation in a clean VM.
       try{this.pageStatus=await new PageScripts(this,baseUrl,manifest).run();}
@@ -650,55 +656,30 @@ html { zoom: 1.6 !important; }
       this.pageStatus={mode:'fast',status:'static',executed:0,requests:0,errors:[]};
       this.dispatch({kind:'domready'});this.pump();
     }
+    if(this.pageStatus.status==='executed')this.engine.callGlobal('eval',`for(const n of document.querySelectorAll('noscript'))n.remove()`);
     this.pageStatus.rendering=manifest.hasFallback && this.pageStatus.status!=='executed'?'fallback':this.pageStatus.status==='executed'?'scripted':'static';
     this.pushLog('[page-status] '+JSON.stringify(this.pageStatus));
     if(serialize)return this.engine.callGlobal('__dom_html').value||html;
   }
 
-  /**
-   * 出站抓取统一入口：直连优先，只有挨了反爬耳光才换反代 IP 的出口重试。
-   *
-   * 为什么需要它：Worker 的 fetch() 出口永远是 CF 机房 IP，Bot Management 一认一个准
-   * （linux.do 403 挑战页、HN 419），而 cloudflare:sockets 明令禁止连 CF 自己的地址段，
-   * 所以 Worker 内部没法自救。反代 IP 是中转站——TCP 连到它、TLS 的 SNI 写目标域名，
-   * 它按 SNI 转发，目标站看到的是反代的 IP（实测 HN 419 → 200）。
-   *
-   * **只给主文档开反代**（allowRelay 默认 true，只有截图/导航这类顶层抓取该用）。
-   * 反代一次要先跑一遍完整的手搓 TLS（纯 JS 的 BigInt x25519 + HKDF + AES），
-   * 纯 CPU 开销；子资源动辄几十上百个、又大多在 CDN 上根本不需要换出口，
-   * 给它们开反代等于把 CPU 烧光——实测 linux.do 87 个子资源那条路径直接把
-   * DO 的 30 秒 CPU 上限撞满（outcome=exceededCpu，返回 500/1101）。
-   *
-   * 只在「被拦」的状态码上走反代：正常站点一次直连就够，不给它们额外加一个 RTT。
-   * 反代也救不回来时把直连的原始响应还给调用方——错误信息应该反映真实的第一现场。
-   */
-  async smartFetch(url, init = {}, { allowRelay = true } = {}) {
-    const r = await fetch(url, init);
-    const relay = this.env && this.env.RELAY_IP;
-    if (!allowRelay || !relay || r.ok || !BLOCKED_STATUS.has(r.status)) return r;
-    try {
-      const alt = await relayFetch(relay, url, {
-        method: init.method || 'GET',
-        headers: init.headers || {},
-        body: typeof init.body === 'string' ? init.body : null,
-        redirect: init.redirect === 'manual' ? 'manual' : 'follow',
-        signal:init.signal,
-      });
-      if (alt.ok) {
-        this.pushLog(`[relay] ${r.status} → ${alt.status} ${url}`);
-        return alt;
-      }
-      this.pushLog(`[relay] 反代没救回来：${r.status} → ${alt.status} ${url}`);
-    } catch (e) {
-      if(init.signal?.aborted)throw e;
-      this.pushLog(`[relay-error] ${String((e && e.message) || e)} <- ${url}`);
-    }
-    return r;
+  /** Explicit session route: either direct fetch or the selected proxy for every resource. */
+  async smartFetch(url, init = {}) {
+    if(this.proxy)return relayFetch(this.proxy,url,init);
+    return fetch(url,init);
+  }
+
+  configureProxy(input) {
+    const next=normalizeProxy(input);
+    if(JSON.stringify(next)===JSON.stringify(this.proxy))return publicProxy(this.proxy);
+    if(this.engine && this.url!=='about:blank')throw new Error('configure proxy before navigation; use a fresh session to change it');
+    if(this.proxy && JSON.stringify(this.proxy)!==JSON.stringify(next))throw new Error('session proxy is already configured; use a fresh session');
+    this.proxy=next;
+    return publicProxy(this.proxy);
   }
 
   async fetchDocument(url) {
     const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(new Error('document network budget exceeded (2500ms)')),2500);
+    const timer=setTimeout(()=>controller.abort(new Error('document network budget exceeded (10000ms)')),10000);
     try{
       const r=await this.smartFetch(url,{redirect:'follow',signal:controller.signal,headers:requestHeaders({type:'document',url})});
       if(!r.ok){r.body?.cancel().catch(()=>{});throw new Error(`fetch failed: HTTP ${r.status}`+(r.headers.get('cf-mitigated')?' (cf-mitigated: challenge)':''));}
@@ -833,6 +814,11 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
     this.url = 'about:blank';
     this.storage = { local: {}, session: {} };
     this.cookie = '';
+    this.proxy = null;
+    this.pendingNavigation = null;
+    this.renderAssets=new Map();if(activeResourceSession===this)clear_resources();activeResourceSession=null;
+    this.viewport={w:1024,h:768};
+    this.layoutReads=0;
     this.modCache.clear();
     this.modCacheBytes = 0;
     this.modCacheHits = 0;
@@ -851,6 +837,8 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
         if (upgrade !== 'websocket') {
           return Response.json({ error: 'expected Upgrade: websocket' }, { status: 426 });
         }
+        if(u.searchParams.has('proxy'))this.configureProxy(u.searchParams.get('proxy'));
+        else if(u.searchParams.has('proxy_ip')||u.searchParams.has('proxy_port'))this.configureProxy({ip:u.searchParams.get('proxy_ip'),port:Number(u.searchParams.get('proxy_port'))});
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
         server.accept();
@@ -878,7 +866,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
         const translate = body.translate
           ? (typeof body.translate === 'string' && body.translate.trim() ? body.translate.trim().toUpperCase() : 'ZH')
           : null;
-        const { png, finalUrl, bytes, jsInfo } = await this.shot({ url: body.url, w: Math.min(body.w || 1280, 1920), h: Math.min(body.h || 900, 4096), js: !!body.js, translate, fit: body.fit });
+        const { png, finalUrl, bytes, jsInfo } = await this.shot({ url: body.url, w: Math.min(body.w || 1024, 1920), h: Math.min(body.h || 768, 4096), js: !!body.js, translate, fit: body.fit });
         const resp = new Response(png, { headers: { 'content-type': 'image/png', 'x-final-url': finalUrl, 'x-html-bytes': String(bytes) } });
         if (jsInfo) { resp.headers.set('x-browser-status',jsInfo.rendering+':'+jsInfo.status); resp.headers.set('x-js-info',JSON.stringify({mode:jsInfo.mode,status:jsInfo.status,reason:jsInfo.errors?.[0]?.reason,requests:jsInfo.requests,executed:jsInfo.executed,resources:jsInfo.resources})); }
         return resp;
@@ -889,6 +877,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
       if (request.method === 'GET' && path === '/state') {
         return Response.json({
           url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine, page:this.pageStatus||null,
+          proxy:publicProxy(this.proxy),
           modCache: { entries: this.modCache.size, bytes: this.modCacheBytes, hits: this.modCacheHits, fetches: this.modCacheFetches },
         });
       }

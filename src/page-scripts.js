@@ -1,7 +1,7 @@
 import { ModuleResolver, moduleSpecifiers } from './module-resolver.js';
 import { requestHeaders } from './fingerprint.js';
 
-export const PAGE_LIMITS = Object.freeze({ sourceBytes: 48*1024, totalBytes: 128*1024, requests: 8, networkMs: 900, interrupts: 150, tasks: 64, rounds: 12 });
+export const PAGE_LIMITS = Object.freeze({ sourceBytes: 512*1024, totalBytes: 2*1024*1024, requests: 32, networkMs: 5000, interrupts: 1000, tasks: 256, rounds: 32 });
 const encoder = new TextEncoder();
 const size = (s) => encoder.encode(s).length;
 
@@ -112,7 +112,7 @@ export class PageScripts {
         }catch(e){this.error('page-fetch',f.url,e.message);this.s.dispatch({kind:'fetch_resolve',id:f.id,error:e.message});}
       }
       for(const t of timers){
-        if(t.delay>32||t.interval){this.error('deferred-timer',this.base,`${t.delay}ms${t.interval?' interval':''}`);continue;}
+        if(t.delay>1000||t.interval){this.error('deferred-timer',this.base,`${t.delay}ms${t.interval?' interval':''}`);continue;}
         if(t.delay)await new Promise((r)=>setTimeout(r,t.delay));
         this.s.dispatch({kind:'timer_fire',id:t.id});
       }

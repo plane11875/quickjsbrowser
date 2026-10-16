@@ -331,6 +331,7 @@ export function makeCFStream(sock) {
       if (done) return null;
       return value;
     },
+    release() { reader.releaseLock();writer.releaseLock(); },
     destroy() { try { sock.close(); } catch (e) {} },
   };
 }

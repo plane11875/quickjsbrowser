@@ -98,7 +98,7 @@ const slow=make();let begin=performance.now();
 try{
  await assert.rejects(()=>slow.fetchDocument(`http://127.0.0.1:${server.address().port}/`));
  assert.equal(slow.pageStatus.reason,'document-timeout');
- assert.ok(performance.now()-begin<3500);
+ assert.ok(performance.now()-begin<11500);
  const scripts=make();begin=performance.now();
  await scripts.runPageScripts(page(`<script src="http://127.0.0.1:${server.address().port}/hang.js"></script>`),'https://unit.test/',opts);
  assert.equal(scripts.pageStatus.status,'degraded');

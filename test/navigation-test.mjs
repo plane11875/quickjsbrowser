@@ -18,7 +18,8 @@ const s = session();
 const requests = [];
 s.smartFetch = async (url) => {
   requests.push(url);
-  assert.equal(url, 'https://linux.do/t/topic/1', 'restricted navigation must fetch only the document');
+  assert.ok(['https://linux.do/t/topic/1','https://assets.example/style.css'].includes(url),'static navigation must load CSS without fetching page scripts');
+  if(url.endsWith('.css'))return new Response('p { width:120px; color:red }');
   return new Response(html);
 };
 s.cdpEarlyScripts = [{ src: 'globalThis.automationRan = true; document.querySelector("#content").textContent = "automated";' }];
@@ -28,7 +29,8 @@ cdp.onMessage(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: 'h
 await cdp.chain;
 await cdp.sendChain;
 assert.ok(frames.some((f) => f.id === 1 && !f.result.errorText));
-assert.equal(requests.length, 1);
+assert.equal(requests.length, 2);
+assert.equal(value(s,`document.querySelector('#content').getBoundingClientRect().width`),120,'static pages expose CSS geometry before the first screenshot');
 assert.equal(value(s, 'typeof pageRan'), 'undefined');
 assert.equal(value(s, 'automationRan'), true);
 assert.equal(value(s, 'document.querySelector("#content").textContent'), 'automated');

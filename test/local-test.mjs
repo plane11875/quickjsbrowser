@@ -37,7 +37,7 @@ const wasi = {
   },
   proc_exit: (c) => { throw new Error('proc_exit ' + c); },
 };
-const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi });
+const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi, browser:{layout:()=>-1} });
 mem = inst.exports.memory;
 inst.exports._initialize();
 const E = inst.exports;

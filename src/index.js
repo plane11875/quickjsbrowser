@@ -56,7 +56,7 @@ export default {
       const sid = url.searchParams.get('s') || 'cdp';
       const stub = env.QJS.get(env.QJS.idFromName(sid));
       // 透传原请求（Upgrade 头必须保留）；DO 内 accept WebSocketPair
-      return stub.fetch(new Request('https://do.local/cdp', request));
+      return stub.fetch(new Request('https://do.local/cdp'+url.search, request));
     }
 
     const m = /^\/s\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -69,7 +69,9 @@ export default {
 };
 
 function cdpWsUrl(url, key) {
-  return `wss://${url.host}/cdp?key=${encodeURIComponent(key)}&s=${encodeURIComponent(url.searchParams.get('s') || 'default')}`;
+  const q=new URLSearchParams({key,s:url.searchParams.get('s')||'default'});
+  for(const name of ['proxy','proxy_ip','proxy_port'])if(url.searchParams.has(name))q.set(name,url.searchParams.get(name));
+  return `wss://${url.host}/cdp?${q}`;
 }
 
 function pageTarget(url, key) {

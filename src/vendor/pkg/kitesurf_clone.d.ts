@@ -8,6 +8,7 @@ export function set_generic_lead(generic: string, families: Array<any>): boolean
 export function render_png_rgba_no_js(html: string, base_url: string, width: number, height: number): Uint8Array;
 export function last_panic(): string;
 export function initialize(): void;
+export function layout_query(html: string, base_url: string, width: number, height: number, selector: string, property: string, x: number, y: number): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -18,6 +19,7 @@ export interface InitOutput {
   readonly clear_resources: () => void;
   readonly initialize: () => void;
   readonly last_panic: () => [number, number];
+  readonly layout_query: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
   readonly missed_resources: () => any;
   readonly render_png_rgba_no_js: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
   readonly set_generic_lead: (a: number, b: number, c: any) => number;

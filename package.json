@@ -9,14 +9,16 @@
     "build:renderer": "bash scripts/build-renderer.sh",
     "test": "node test/run-local.mjs && node test/renderer-regression.mjs",
     "test:renderer": "node test/renderer-regression.mjs",
-    "test:remote": "node test/cdp-smoke.mjs"
+    "test:remote": "node test/cdp-smoke.mjs",
+    "test:browser-flow:remote": "node test/browser-flow-remote.mjs"
   },
   "devDependencies": {
     "chrome-remote-interface": "^0.34.0",
     "global-agent": "^4.1.3",
     "puppeteer-core": "^25.13.0",
     "undici": "^8.11.2",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "ws": "^8.21.0"
   },
   "dependencies": {
     "es-module-lexer": "3.0.4",
