@@ -25,6 +25,7 @@ s.smartFetch = async (url) => {
 s.cdpEarlyScripts = [{ src: 'globalThis.automationRan = true; document.querySelector("#content").textContent = "automated";' }];
 const frames = [];
 const cdp = new CdpConnection(s, { send: (frame) => frames.push(JSON.parse(frame)) });
+cdp.scriptExecutionDisabled=true;
 cdp.onMessage(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: 'https://linux.do/t/topic/1' } }));
 await cdp.chain;
 await cdp.sendChain;
@@ -41,7 +42,7 @@ assert.ok(frames.some((f) => f.method === 'Page.loadEventFired'));
 assert.ok(s.engine.callGlobal('__dom_html').value.includes('automated'));
 cdp.close();
 s.engine.dispose();
-console.log('PASS CDP site policy preserves DOM, CSS, early scripts and lifecycle');
+console.log('PASS explicit CDP script disable preserves DOM, CSS, early scripts and lifecycle');
 
 const unrestricted = session();
 let active = 0, peak = 0;
@@ -90,4 +91,4 @@ await command(13,'Page.navigate',{url:'https://example.com/'});
 assert.equal(toggled.pageStatus.mode,'fast');
 assert.equal(value(toggled,'typeof pageEnabled'),'undefined');
 toggleCdp.close();toggled.engine.dispose();
-console.log('PASS real CDP script toggle overrides site defaults in both directions');
+console.log('PASS real CDP script toggle controls execution in both directions');
