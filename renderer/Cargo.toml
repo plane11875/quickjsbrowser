@@ -1,0 +1,31 @@
+[package]
+name = "quickjsbrowser-renderer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+blitz-dom = { path = "../.cache/blitz/packages/blitz-dom", default-features = false, features = ["svg", "woff", "floats"] }
+blitz-html = { path = "../.cache/blitz/packages/blitz-html", default-features = false }
+blitz-paint = { path = "../.cache/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
+blitz-traits = { path = "../.cache/blitz/packages/blitz-traits", default-features = false }
+anyrender = "=0.13.0"
+anyrender_vello_cpu = { version = "=0.17.0", default-features = false }
+parley = { version = "=0.11.1", default-features = false, features = ["std"] }
+peniko = "0.6"
+wasm-bindgen = "=0.2.100"
+js-sys = "=0.3.77"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+data-url = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
