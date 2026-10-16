@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+.cache/
+.dev.vars
+.env
+.env.*
+!.env.example
+*.log
+*.cpuprofile
+renderer/target/
+vendor/wasi-sdk/
+vendor/quickjs/
+upstream/

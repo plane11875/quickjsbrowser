@@ -1,0 +1,22 @@
+{
+  "name": "quickjsbrowser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cd engine && WASI_SDK_PATH=${WASI_SDK_PATH:-$PWD/vendor/wasi-sdk} ./build.sh",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test:local": "node test/local-test.mjs"
+  },
+  "devDependencies": {
+    "chrome-remote-interface": "^0.34.0",
+    "global-agent": "^4.1.3",
+    "puppeteer-core": "^25.13.0",
+    "undici": "^8.11.2",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2",
+    "linkedom": "^0.18.13"
+  }
+}
