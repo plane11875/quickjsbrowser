@@ -7,7 +7,8 @@
     },
     "ghcr.io/devcontainers/features/rust:1": {
       "version": "stable"
-    }
+    },
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
-  "postCreateCommand": "npm ci"
+  "postCreateCommand": "sudo apt-get update -qq && sudo apt-get install -y libclang-dev pkg-config && npm ci"
 }

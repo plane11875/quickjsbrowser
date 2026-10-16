@@ -11,3 +11,4 @@ renderer/target/
 vendor/wasi-sdk/
 vendor/quickjs/
 upstream/
+engine/engine.wasm

@@ -58,6 +58,10 @@ for (const target of targets) {
     const png = Buffer.from(screenshot.data, 'base64');
     assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
     assert.ok(png.length > 1000);
+    const logUrl = new URL(`/s/${sid}/log`, base);
+    logUrl.searchParams.set('key', key);
+    const logs = await (await fetch(logUrl)).json();
+    fs.writeFileSync(path.join(output, `${sid}-log.json`), JSON.stringify(logs, null, 2));
     const label = target.startsWith('data:') ? 'inline-float' : new URL(target).hostname;
     const filename = path.join(output, `${label}-${sid}.png`);
     fs.writeFileSync(filename, png);
