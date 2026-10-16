@@ -124,7 +124,8 @@ export class QjsSession {
     this.cookie = '';
     this.proxy = null;
     this.pendingNavigation = null;
-    this.renderAssets=new Map();
+    this.pageLoad=null;this.loadBatchRemaining=null;this.operation=Promise.resolve();
+    this.renderFailed=new Set();this.renderAssets=new Map();
     this.viewport={w:1024,h:768};
     this.layoutReads=0;
     // 模块源码缓存：url → {text, kind}；null 值 = 已确认取不到（负缓存，
@@ -136,6 +137,40 @@ export class QjsSession {
     // CDP 面（cdp.js 协议适配层使用）：连接集合、新文档早期脚本、事件外发钩子
     this.cdpConns = new Set();
     this.cdpEarlyScripts = null;
+  }
+
+  withOperation(fn) {
+    const next=this.operation.then(fn);this.operation=next.catch(()=>{});return next;
+  }
+
+  beginLoadBatch(requests=32) {
+    if(!Number.isInteger(requests)||requests<1||requests>40)throw new Error('requests must be an integer from 1 to 40');
+    this.loadBatchRemaining=requests;
+  }
+
+  async fetchLoadingResource(url,init) {
+    if(this.loadBatchRemaining===0){const e=new Error('resource batch exhausted');e.loadingPending=true;throw e;}
+    if(this.loadBatchRemaining!=null)this.loadBatchRemaining--;
+    try{return await this.smartFetch(url,init);}
+    catch(e){
+      if(/Too many subrequests/i.test(e.message)){this.loadBatchRemaining=0;e.loadingPending=true;}
+      throw e;
+    }
+  }
+
+  loadingState() {
+    const job=this.pageLoad;
+    return {id:job?.id||null,status:job?.pending?'pending':job?(this.pageStatus?.status==='degraded'?'failed':'complete'):'idle',stage:job?.stage||null,
+      cachedResources:this.renderAssets.size,cachedScripts:job?.pipeline?[...job.pipeline.prepared.values()].filter(p=>p.text!=null).length:0,
+      remainingScripts:job?.manifest?.scripts.filter(script=>job.enabled&&job.pipeline?.prepared.get(script)?.text==null).length||0,
+      remainingResources:this.renderPending?.length||0,failedResources:this.renderFailed.size,
+      page:this.pageStatus||null};
+  }
+
+  async continueLoading({id,requests=32}={}) {
+    if(!this.pageLoad||id!==this.pageLoad.id)throw new Error('load session lost or stale load id; navigate again');
+    if(!this.pageLoad.pending)return this.loadingState();
+    this.beginLoadBatch(requests);await this.advancePageLoad();return this.loadingState();
   }
 
   /** console/exception 任务转发给所有 CDP 连接（Runtime.consoleAPICalled 等） */
@@ -479,33 +514,35 @@ export class QjsSession {
   async prepareLayout(html,base,w=this.viewport.w,h=this.viewport.h) {
     await this.ensureBlitz();
     this.viewport={w,h};this.activateResources();
-    this.renderResourcesIncomplete=false;this.renderResourceFailures=0;
+    this.renderResourcesIncomplete=false;this.renderResourceFailures=this.renderFailed.size;
+    this.renderPending=[];
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000),tried=new Set();
     try {
       for(let pass=0;pass<4;pass++){
         this.activateResources();
         layout_query(stripScriptBodies(html),base,w,h,'','',0,0);
-        const todo=missed_resources().filter(u=>!tried.has(u)&&!this.renderAssets.has(u)&&worthFetchingForRender(u));
+        const todo=missed_resources().filter(u=>!tried.has(u)&&!this.renderAssets.has(u)&&!this.renderFailed.has(u)&&worthFetchingForRender(u));
         if(!todo.length)break;
         for(const u of todo)tried.add(u);
         await this.mapLimit(todo,RESOURCE_CONCURRENCY,async(u)=>{
           try {
-            const r=await this.smartFetch(u,{redirect:'follow',signal:controller.signal,headers:requestHeaders({type:guessType(u),url:u,referer:base})});
-            if(!r.ok){r.body?.cancel().catch(()=>{});this.renderResourceFailures++;return;}
+            const r=await this.fetchLoadingResource(u,{redirect:'follow',signal:controller.signal,headers:requestHeaders({type:guessType(u),url:u,referer:base})});
+            if(!r.ok){r.body?.cancel().catch(()=>{});this.renderResourceFailures++;this.renderFailed.add(u);return;}
             const limit=4*1024*1024;if(+r.headers.get('content-length')>limit)throw new Error('render asset too large');
             const reader=r.body?.getReader(),chunks=[];let n=0;
             try{if(reader)for(;;){const r=await reader.read();if(r.done)break;n+=r.value.length;if(n>limit)throw new Error('render asset too large');chunks.push(r.value);}}catch(e){reader?.cancel().catch(()=>{});throw e;}
             const bytes=new Uint8Array(n);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}
             let total=0;for(const b of this.renderAssets.values())total+=b.length;if(total+n>16*1024*1024)throw new Error('render asset memory budget exceeded');
             this.renderAssets.set(u,bytes);this.activateResources();add_resource(u,bytes);
-          }catch(e){this.renderResourceFailures++;}
+          }catch(e){if(e.loadingPending||controller.signal.aborted){this.renderResourcesIncomplete=true;}else{this.renderResourceFailures++;this.renderFailed.add(u);}}
         });
-        if(controller.signal.aborted){this.renderResourcesIncomplete=true;break;}
+        if(controller.signal.aborted||this.loadBatchRemaining===0){this.renderResourcesIncomplete=true;break;}
       }
     }finally{clearTimeout(timer);}
     this.activateResources();
     layout_query(stripScriptBodies(html),base,w,h,'','',0,0);
-    if(missed_resources().some(u=>worthFetchingForRender(u)&&!this.renderAssets.has(u)))this.renderResourcesIncomplete=true;
+    this.renderPending=missed_resources().filter(u=>worthFetchingForRender(u)&&!this.renderAssets.has(u)&&!this.renderFailed.has(u));
+    if(this.renderPending.length)this.renderResourcesIncomplete=true;
   }
 
   /** x.com 推文页适配：布局放宽 + zoom（display 裁剪走 DOM 手术，不依赖类名） */
@@ -619,14 +656,15 @@ html { zoom: 1.6 !important; }
   }
 
   /** 页面脚本管线：抽脚本 → 预取 → DOM 建立 → 经典脚本 → 模块 → settle → 序列化 */
-  async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport } = {}) {
+  async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport, resourceBatch = 32 } = {}) {
+    this.beginLoadBatch(resourceBatch);
     this.pendingNavigation=null;
     const lim=siteLimitsFor(baseUrl);
     const enabled=executeScripts ?? lim?.js!==false;
     // A new document gets a fresh VM: old globals, pending jobs and module
     // records must not survive navigation or an aborted page application.
     if(this.engine){this.engine.dispose();this.engine=null;}
-    this.ensure();this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
+    this.ensure();this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();this.renderFailed.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
     this.dispatch({kind:'load_dom',html,baseUrl});
     const early=()=>{
       for(const item of this.cdpEarlyScripts||[]){
@@ -638,11 +676,26 @@ html { zoom: 1.6 !important; }
     early();
     const manifest=this.engine.callGlobal('__page_manifest').value;
     if(!manifest)throw new Error('DOM manifest failed');
-    await this.prepareLayout(html,baseUrl);
+    this.pageLoad={id:crypto.randomUUID(),html,baseUrl,viewport,enabled,manifest,early,stage:'resources',pending:true,pipeline:null};
+    await this.advancePageLoad();
+    if(serialize)return this.engine.callGlobal('__dom_html').value||html;
+  }
+
+  async advancePageLoad() {
+    const job=this.pageLoad;
+    const {html,baseUrl,viewport,enabled,manifest,early}=job;
+    if(job.stage==='resources'){
+      await this.prepareLayout(html,baseUrl);
+      if(this.renderPending.length){
+        this.pageStatus={mode:'bounded',status:'pending',rendering:'partial',executed:0,errors:[]};return;
+      }
+      job.stage='scripts';
+    }
     if(enabled){
       // On failure rebuild the original DOM and trusted automation in a clean VM.
-      try{this.pageStatus=await new PageScripts(this,baseUrl,manifest).run();}
+      try{this.pageStatus=await (job.pipeline??=new PageScripts(this,baseUrl,manifest)).run();}
       catch(e){this.pageStatus={mode:'bounded',status:'degraded',errors:[{reason:'pipeline',detail:e.message}]};}
+      if(this.pageStatus.status==='pending'){this.pageStatus.rendering='partial';return;}
       if(this.pageStatus.status==='degraded'){
         // A preflight refusal has not executed page code or changed its DOM.
         // Keep it intact instead of reinitializing Wasm and repeating automation.
@@ -658,8 +711,9 @@ html { zoom: 1.6 !important; }
     }
     if(this.pageStatus.status==='executed')this.engine.callGlobal('eval',`for(const n of document.querySelectorAll('noscript'))n.remove()`);
     this.pageStatus.rendering=manifest.hasFallback && this.pageStatus.status!=='executed'?'fallback':this.pageStatus.status==='executed'?'scripted':'static';
+    job.pending=false;job.stage='complete';this.loadBatchRemaining=null;
     this.pushLog('[page-status] '+JSON.stringify(this.pageStatus));
-    if(serialize)return this.engine.callGlobal('__dom_html').value||html;
+    for(const c of this.cdpConns)c.onLoadingComplete?.();
   }
 
   /** Explicit session route: either direct fetch or the selected proxy for every resource. */
@@ -816,6 +870,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
     this.cookie = '';
     this.proxy = null;
     this.pendingNavigation = null;
+    this.pageLoad=null;this.pageStatus=null;this.loadBatchRemaining=null;this.renderPending=[];this.renderFailed.clear();
     this.renderAssets=new Map();if(activeResourceSession===this)clear_resources();activeResourceSession=null;
     this.viewport={w:1024,h:768};
     this.layoutReads=0;
@@ -827,6 +882,10 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
   }
 
   async fetch(request) {
+    return this.withOperation(()=>this.handleRequest(request));
+  }
+
+  async handleRequest(request) {
     const u = new URL(request.url);
     const path = u.pathname.replace(/^\/s\/[^/]+/, '') || '/';
     try {
@@ -853,6 +912,9 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
         server.addEventListener('error', () => conn.close());
         return new Response(null, { status: 101, webSocket: client });
       }
+      if(request.method==='POST'&&path==='/continue'){
+        const body=await request.json();return Response.json(await this.continueLoading(body));
+      }
       if (request.method === 'POST' && path === '/eval') {
         const body = await request.json();
         return Response.json(await this.evalCode(body));
@@ -877,7 +939,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
       if (request.method === 'GET' && path === '/state') {
         return Response.json({
           url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine, page:this.pageStatus||null,
-          proxy:publicProxy(this.proxy),
+          proxy:publicProxy(this.proxy),loading:this.loadingState(),
           modCache: { entries: this.modCache.size, bytes: this.modCacheBytes, hits: this.modCacheHits, fetches: this.modCacheFetches },
         });
       }
