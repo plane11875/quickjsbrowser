@@ -64,11 +64,13 @@ for(const [name,code,expected] of [
 console.log('PASS thrown/rejected errors are visible and runaway execution rolls back promptly');
 
 const giant=make();
+giant.cdpEarlyScripts=[{src:'console.log("trusted-automation-once")'}];
 giant.smartFetch=async()=>new Response('not downloaded',{headers:{'content-length':'3825007'}});
 const started=performance.now();
 await giant.runPageScripts(page('<script type="module" src="/giant.js"></script>'),'https://unit.test/',opts);
 assert.equal(giant.pageStatus.status,'degraded');
 assert.equal(giant.pageStatus.executed,0);
+assert.equal(giant.log.filter(line=>line.includes('trusted-automation-once')).length,1,'preflight refusal must not repeat automation side effects');
 assert.equal(giant.pageStatus.sourceBytes,0);
 assert.ok(JSON.stringify(giant.pageStatus.errors).includes('size budget'));
 assert.ok(performance.now()-started<1500);

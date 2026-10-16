@@ -8,7 +8,7 @@ The browser now executes small page applications within explicit limits. It does
 - CDP keeps the site's existing default policy. linux.do remains static by default. `Emulation.setScriptExecutionDisabled({value:false})` explicitly requests bounded scripts; `value:true` disables them.
 - `GET /s/:sid/state` includes `page`: mode, execution status, rendering classification, consumed resources and structured errors. PNG responses expose `x-browser-status` and compact `x-js-info` headers.
 - `rendering: fallback` explicitly identifies the known noscript fallback document. `scripted` means the bounded script pipeline completed, not a claim of Chrome-equivalent rendering or a guarantee that an arbitrary framework fully hydrated.
-- A script failure, unsupported capability or budget violation discards the page VM and rebuilds the original DOM and trusted automation scripts. Partially executed application DOM and pending jobs are not retained.
+- If page code has run, a script failure, unsupported capability or budget violation discards the VM and rebuilds the original DOM and trusted automation scripts. A preflight refusal keeps the untouched DOM without rebuilding Wasm or repeating automation side effects. Partially executed application DOM and pending jobs are not retained.
 
 ## Budgets
 

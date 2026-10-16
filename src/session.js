@@ -638,8 +638,12 @@ html { zoom: 1.6 !important; }
       try{this.pageStatus=await new PageScripts(this,baseUrl,manifest).run();}
       catch(e){this.pageStatus={mode:'bounded',status:'degraded',errors:[{reason:'pipeline',detail:e.message}]};}
       if(this.pageStatus.status==='degraded'){
-        this.engine.dispose();this.engine=null;this.ensure();this.pushLoc();
-        if(viewport)this.dispatch({kind:'viewport',...viewport});this.dispatch({kind:'load_dom',html,baseUrl});early();
+        // A preflight refusal has not executed page code or changed its DOM.
+        // Keep it intact instead of reinitializing Wasm and repeating automation.
+        if(this.pageStatus.executed!==0){
+          this.engine.dispose();this.engine=null;this.ensure();this.pushLoc();
+          if(viewport)this.dispatch({kind:'viewport',...viewport});this.dispatch({kind:'load_dom',html,baseUrl});early();
+        }
         this.dispatch({kind:'domready'});this.pump();
       }
     }else{
@@ -718,8 +722,7 @@ html { zoom: 1.6 !important; }
     let finalHtml = html;
     let usedEngineDom = false;
     // 页面脚本可能读 screen/innerWidth 做分支，视口必须先于脚本派发（否则读到默认值）。
-    this.ensure();
-    this.dispatch({ kind: 'viewport', w, h });
+    if(!js){this.ensure();this.dispatch({kind:'viewport',w,h});}
     if (js) {
       try { finalHtml = await this.runPageScripts(html, finalUrl, {executeScripts:true,viewport:{w,h}}); usedEngineDom = true; }
       catch (e) { this.pushLog('[js-pipeline-error] ' + String((e && e.message) || e)); }
