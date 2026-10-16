@@ -48,7 +48,7 @@ Additional deployed CDP checks passed: example.com (44 ms navigation, 360 ms cap
 
 ## Direct HTTP screenshots and remaining network limitation
 
-Three further direct HTTP screenshot requests, with page JavaScript disabled, produced two valid PNGs in 2.694 and 6.313 seconds. The third returned an error: direct origin fetch was challenged with 403 and the relay received 429. It did not reach rendering or hit the CPU limit. These HTTP results are not reported as three passing screenshot tests. The remaining variable delay/access failure involves the upstream fetch/relay path; this change does not resolve upstream anti-bot challenges or rate limiting.
+Three further direct HTTP screenshot requests, with page JavaScript disabled, produced two valid PNGs in 2.694 and 6.313 seconds. The third returned an error: direct origin fetch was challenged with 403 and the relay received 429. It did not reach rendering or hit the CPU limit. These HTTP results are not reported as three passing screenshot tests. Platform records for the two successful HTTP calls show 1,562 ms CPU / 1,956 ms wall and 779 ms CPU / 5,460 ms wall respectively. The rejected call used 26 ms CPU / 149 ms wall. In particular, the slower successful call spends most of its wall time outside CPU execution. The remaining variable delay/access failure involves the upstream fetch/relay path; this change does not resolve upstream anti-bot challenges or rate limiting.
 
 ## Local validation
 
