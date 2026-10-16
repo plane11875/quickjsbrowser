@@ -48,3 +48,26 @@ Validation: the local integration test loads 45 stylesheets and 43 scripts in
 engine and geometry, no premature load event, mixed HTTP/CDP continuation,
 concurrent continuation, module dependency suspension and invalid IDs. The real
 Worker regression repeats the 88-resource flow on one CDP WebSocket.
+
+## Deployed verification, 2026-10-16
+
+Worker version `1bad7eb5-3c64-4a02-80e2-6979992ee056`, code `9ecba45`:
+all six deployed scenarios passed with fresh session names. The 88-resource case
+used one WebSocket and returned these measured progress snapshots:
+
+| Batch | Renderer resources cached | Scripts prepared | Status |
+| --- | ---: | ---: | --- |
+| 1 | 40 | 0 | pending/resources |
+| 2 | 45 | 35 | pending/scripts |
+| 3 | 45 | 43 | complete |
+
+The final DOM reported 43 script runs and a CSS width of 123px. Repeating the
+completed continuation left the script count at 43. Existing interactive click,
+link navigation, module loading, direct example.com, invalid explicit proxy and
+linux.do through the selected SNI relay also passed. The linux.do case validates
+its existing static policy, not full Discourse application execution.
+
+Cloudflare documents [subrequests per invocation](https://developers.cloudflare.com/workers/platform/limits/#subrequests)
+and [Durable Object CPU limits](https://developers.cloudflare.com/durable-objects/platform/limits/).
+CPU reset documentation alone does not establish subrequest behavior; the deployed
+88-resource test verifies continuation across messages with this implementation.
