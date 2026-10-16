@@ -16,6 +16,7 @@ type Resources = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 static RESOURCES: OnceLock<Resources> = OnceLock::new();
 static MISSED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 static FONTS: OnceLock<Mutex<Vec<(String, Vec<u8>)>>> = OnceLock::new();
+static LAST_PANIC: OnceLock<Mutex<String>> = OnceLock::new();
 static GENERICS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
 
 fn resources() -> &'static Resources { RESOURCES.get_or_init(Default::default) }
@@ -117,4 +118,13 @@ pub fn render_png_rgba_no_js(html: &str, base_url: &str, width: u32, height: u32
 }
 
 #[wasm_bindgen]
-pub fn last_panic() -> String { String::new() }
+pub fn last_panic() -> String { LAST_PANIC.get_or_init(Default::default).lock().unwrap().clone() }
+
+#[wasm_bindgen(start)]
+pub fn initialize() {
+    std::panic::set_hook(Box::new(|info| {
+        if let Ok(mut message) = LAST_PANIC.get_or_init(Default::default).lock() {
+            *message = info.to_string();
+        }
+    }));
+}

@@ -14,13 +14,8 @@ if [[ $(git -C .cache/blitz rev-parse HEAD 2>/dev/null || true) != "$REV" ]]; th
   git -C .cache/blitz checkout -q "$REV"
 fi
 # The upstream constructor must not emit float-only yields in non-float builds.
-python3 - <<'PY'
-from pathlib import Path
-p = Path('.cache/blitz/packages/blitz-dom/src/layout/construct.rs')
-s = p.read_text()
-s = s.replace('} else if float.is_floating() {', '} else if cfg!(feature = "floats") && float.is_floating() {')
-p.write_text(s)
-PY
+python3 scripts/patch-blitz.py
+
 rustup target add wasm32-unknown-unknown
 if ! command -v wasm-bindgen >/dev/null || [[ $(wasm-bindgen --version) != 'wasm-bindgen 0.2.100' ]]; then
   cargo install wasm-bindgen-cli --version 0.2.100 --locked
