@@ -2,6 +2,36 @@
 
 Cloudflare Workers 上的 QuickJS/WASM 浏览器服务：QuickJS 执行脚本，linkedom 提供 JavaScript DOM，Blitz 负责 HTML/CSS 布局和截图。提供 HTTP API 与 CDP 子集。
 
+## 线上截图与部署状态
+
+2026-10-16 已部署分批加载版本，Worker 版本为 `1bad7eb5-3c64-4a02-80e2-6979992ee056`（运行代码 `9ecba45`）。以下 PNG 均由真实 Worker 的 `Page.captureScreenshot` 生成。
+
+### 点击改变 DOM 与 CSS
+
+同一个页面，点击 Change 后，红色方块变成绿色，文字从 before 变为 after，宽度从 120px 变为 240px。
+
+| 点击前 | 点击后 |
+| --- | --- |
+| ![Worker 截图：点击前的红色方块](docs/images/resume-worker-before.png) | ![Worker 截图：点击后的绿色方块](docs/images/resume-worker-after-click.png) |
+
+点击 Next page 链接后，CDP 导航到新页面：
+
+<img src="docs/images/resume-worker-next-page.png" alt="Worker 截图：点击链接后到达下一页" width="640">
+
+### linux.do 页面
+
+通过指定的 SNI 中继访问并截图。此例使用现有静态页面策略，展示当前 CSS 与排版效果；尚未验证完整 Discourse 应用的脚本执行。
+
+![Worker 截图：linux.do 当前渲染结果](docs/images/resume-worker-linux-sni.png)
+
+### 88 个资源分批加载
+
+同一条 CDP 连接加载 45 个 CSS 与 43 个 JS，按 40、40、8 三批完成。前两批返回 pending，最后才执行脚本并发送页面加载完成事件。下面是简化测试页：绿色区域宽 123px，数字 43 是脚本执行次数；重复继续不会增加次数。
+
+<img src="docs/images/resume-worker-resumable-88.png" alt="88 个资源分批完成后的测试页：绿色区域显示 43" width="512">
+
+加载期间 DOM、资源和脚本准备进度保留在 Durable Object 内存中。用 `Browser.continueLoading({id, requests:40})` 继续，详见[分批加载接口与线上验证](docs/resumable-loading.md)。完整本地测试、6 项渲染回归与 6 个线上场景均已通过。
+
 ## 本次修复
 
 行内浮动元素会让旧渲染器卡在 Parley 断行循环，直至 Durable Object CPU 超限。最小复现：
@@ -36,7 +66,7 @@ npm test
 - Blitz 固定为 `4507cd7e2261a439e727aacc0a65cb1d3a2434f9`，本地补丁由 `scripts/patch-blitz.py` 幂等应用。
 - Rust 依赖由 `renderer/Cargo.lock` 锁定，wasm-bindgen CLI 固定为 0.2.100。
 
-`npm test` 会运行原有六组本地套件和独立进程中的浮动回归测试。每个渲染案例有超时，覆盖最小复现、块级浮动、左右浮动位置差异，以及外链 CSS。
+`npm test` 会运行十组本地套件和独立进程中的浮动回归测试。每个渲染案例有超时，覆盖最小复现、块级浮动、左右浮动位置差异，以及外链 CSS。
 
 ## 部署与线上验证
 
