@@ -20,6 +20,6 @@ rustup target add wasm32-unknown-unknown
 if ! command -v wasm-bindgen >/dev/null || [[ $(wasm-bindgen --version) != 'wasm-bindgen 0.2.100' ]]; then
   cargo install wasm-bindgen-cli --version 0.2.100 --locked
 fi
-cargo build --manifest-path renderer/Cargo.toml --target wasm32-unknown-unknown --release
+cargo build --locked --manifest-path renderer/Cargo.toml --target wasm32-unknown-unknown --release
 wasm-bindgen renderer/target/wasm32-unknown-unknown/release/quickjsbrowser_renderer.wasm \
   --target web --out-dir src/vendor/pkg --out-name kitesurf_clone
