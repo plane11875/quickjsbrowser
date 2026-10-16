@@ -21,8 +21,8 @@ export class PageScripts {
     this.errors.push(record);
     this.s.pushLog('[page-error] ' + JSON.stringify(record));
   }
-  countSource(text, url) {
-    const n = size(text);
+  countSource(text, url, byteLength) {
+    const n = byteLength ?? size(text);
     if (n > PAGE_LIMITS.sourceBytes || this.bytes+n > PAGE_LIMITS.totalBytes) {
       this.error('source-budget', url, `${n} bytes; limit ${PAGE_LIMITS.sourceBytes}, total ${PAGE_LIMITS.totalBytes}`); return false;
     }
@@ -54,16 +54,16 @@ export class PageScripts {
         }
       } catch(e) { reader.cancel().catch(()=>{}); throw e; }
     }
-    const bytes = new Uint8Array(n);let offset=0;for(const p of parts){bytes.set(p,offset);offset+=p.length;}
-    return { r, text:new TextDecoder().decode(bytes) };
+    let bytes;if(parts.length===1)bytes=parts[0];else{bytes=new Uint8Array(n);let offset=0;for(const p of parts){bytes.set(p,offset);offset+=p.length;}}
+    return { r, text:new TextDecoder().decode(bytes), byteLength:n };
   }
   source(url, module) {
     const key = `${module ? 'm':'s'}:${url}`;
     if (this.sources.has(key)) return this.sources.get(key);
     const pending = (async()=>{
       try {
-        const text = (await this.request(url, {headers:requestHeaders({type:'script',url,referer:this.base,mode:module?'cors':'no-cors',origin:!!module})})).text;
-        if (!this.countSource(text,url)) return null;
+        const {text,byteLength} = await this.request(url, {headers:requestHeaders({type:'script',url,referer:this.base,mode:module?'cors':'no-cors',origin:!!module})});
+        if (!this.countSource(text,url,byteLength)) return null;
 
         return text;
       } catch(e) { if(e.loadingPending){this.paused=true;this.sources.delete(key);return null;} this.error('script-fetch',url,e.message); return null; }
@@ -90,6 +90,7 @@ export class PageScripts {
         if(!await this.graph(abs,null,depth+1,branch))ok=false;
       }
       if(ok && !this.s.registerModule(url,{text:prepareDynamicImports(text,url),kind:0})) {this.error('module-register',url);ok=false;}
+      if(ok)this.sources.delete('m:'+url);
       return ok;
     })();
     this.nodes.set(url,pending);const ok=await pending;if(!ok)this.nodes.delete(url);return ok;
@@ -175,6 +176,7 @@ export class PageScripts {
           for(const script of scripts.filter((s)=>!s.module)){
             const p=prepared.get(script);if(p?.text==null)continue;
             const r=this.s.engine.callGlobal('__run_page_script',JSON.stringify({code:prepareDynamicImports(p.text,p.url),url:p.url,index:script.index}));
+            p.text='';this.sources.delete('s:'+p.url);
             this.executed++;
             if(!r.ok||r.value?.error)this.error('classic-script',p.url,r.value?.error||r.error);
             this.drain();if(this.s.engine.scopeExhausted())break;
@@ -183,7 +185,7 @@ export class PageScripts {
             if(this.s.engine.scopeExhausted())break;const p=prepared.get(script);if(p?.text==null||!runnableModules.has(script))continue;
             const code=`import(${JSON.stringify(p.url)}).catch(e=>__report_page_error(e,${JSON.stringify(p.url)}));`;
             if(this.s.engine.eval(code,this.base,false))this.error('module-eval',p.url);
-            this.executed++;this.drain();
+            p.text='';this.executed++;this.drain();
           }
           }
           if(!this.s.engine.scopeExhausted()){if(!this.domReady){this.domReady=true;this.s.dispatch({kind:'domready'});}await this.settle();}

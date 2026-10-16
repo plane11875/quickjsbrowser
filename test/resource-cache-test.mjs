@@ -15,7 +15,7 @@ cache.entries.values().next().value.until=0;const n=calls;await get();assert.equ
 cache.clear();await get(undefined,{method:'POST'});assert.equal(cache.stats().entries,0);
 const s=new QjsSession({waitUntil(){}},{});let network=0;
 s.smartFetch=async url=>{network++;return new Response(`globalThis.runs=(globalThis.runs||0)+1;document.body.setAttribute('data-page',location.pathname);`,{headers:{'content-type':'text/javascript','cache-control':'max-age=600'}});};
-for(const path of ['a','b','a']){await s.runPageScripts('<html><head><script src="/common.js"></script></head><body></body></html>','https://test/'+path,{resourceBatch:1});assert.equal(s.engine.callGlobal('eval','runs').value,1);assert.equal(s.engine.callGlobal('eval','document.body.getAttribute("data-page")').value,'/'+path);}
+let instance;for(const path of ['a','b','a']){await s.runPageScripts('<html><head><script src="/common.js"></script></head><body></body></html>','https://test/'+path,{resourceBatch:1});if(instance)assert.equal(s.engine.instance,instance,'navigation reuses the linear memory with a new runtime');instance=s.engine.instance;assert.equal(s.engine.callGlobal('eval','runs').value,1);assert.equal(s.engine.callGlobal('eval','document.body.getAttribute("data-page")').value,'/'+path);}
 assert.equal(network,1);assert.equal(s.resourceCache.stats().hits,2);
 s.reset();assert.equal(s.resourceCache.stats().entries,0);
 console.log('PASS cache freshness, variants, credentials, query strings, eviction, failure retry, concurrent fetches, cross-navigation A/B/A and fresh globals');

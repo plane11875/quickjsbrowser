@@ -63,7 +63,9 @@ export class ModuleResolver {
 // Lexical spans avoid touching comments, strings or import.meta. The native
 // import executes only after the asynchronous host has prepared the module.
 export function prepareDynamicImports(source, base) {
-  const imports=parse(source)[0].filter(i=>i.d>=0).sort((a,b)=>b.ss-a.ss);
-  for(const i of imports)source=source.slice(0,i.ss)+'globalThis.__dynamicImport.bind(null,'+JSON.stringify(base)+')'+source.slice(i.ss+6);
-  return source;
+  const imports=parse(source)[0].filter(i=>i.d>=0).sort((a,b)=>a.ss-b.ss);
+  if(!imports.length)return source;
+  const chunks=[];let cursor=0;
+  for(const i of imports){chunks.push(source.slice(cursor,i.ss),'globalThis.__dynamicImport.bind(null,'+JSON.stringify(base)+')');cursor=i.ss+6;}
+  chunks.push(source.slice(cursor));return chunks.join('');
 }

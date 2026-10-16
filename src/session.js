@@ -111,7 +111,7 @@ export class QjsSession {
     this.pageLoad=null;this.loadBatchRemaining=null;this.operation=Promise.resolve();
     this.renderFailed=new Set();this.renderAssets=new Map();
     this.viewport={w:1024,h:768};
-    this.layoutReads=0;this.pendingDynamicImports=[];
+    this.layoutReads=0;this.pendingDynamicImports=[];this.hostTimers=new Set();this.hostFetches=new Set();
     // 模块源码缓存：url → {text, kind}；null 值 = 已确认取不到（负缓存，
     // 避免每次导航都去撞同一个死链）
     this.modCache = new Map();
@@ -166,9 +166,9 @@ export class QjsSession {
     }
   }
 
-  ensure() {
+  ensure(instance=null) {
     if (this.engine) return;
-    this.engine = new QjsEngine({layout:request=>this.syncLayout(request)});
+    this.engine = new QjsEngine({layout:request=>this.syncLayout(request),instance});
     const b = new Uint8Array(65536);
     crypto.getRandomValues(b);
     this.dispatch({ kind: 'random', b64: toB64(b) });
@@ -214,11 +214,12 @@ export class QjsSession {
       case 'timer': {
         const delay = Math.min(Math.max(t.payload.delay || 0, 0), 60000);
         const engine=this.engine;
-        setTimeout(() => {
+        const timer=setTimeout(() => {
+          this.hostTimers.delete(timer);
           if (!this.engine || this.engine!==engine) return;
           this.dispatch({ kind: 'timer_fire', id: t.payload.id });
           this.pump();
-        }, delay);
+        }, delay);this.hostTimers.add(timer);
         break;
       }
       case 'fetch':
@@ -277,7 +278,7 @@ export class QjsSession {
   }
 
   async hostFetch(p) {
-    const engine=this.engine;
+    const engine=this.engine,controller=new AbortController();this.hostFetches.add(controller);
     try {
       const target=new URL(p.url,this.url).href;
       // 页面脚本发起的 fetch：套上 Chrome 的同款默认头，页面自己给的头优先生效
@@ -294,7 +295,7 @@ export class QjsSession {
         method: p.method,
         headers: reqHeaders,
         body: p.method === 'GET' || p.method === 'HEAD' ? undefined : p.body,
-        redirect: 'follow',
+        redirect: 'follow',signal:controller.signal,
       });
       const ct = r.headers.get('content-type') || '';
       const isText = /^(text\/|application\/(json|javascript|xml))/i.test(ct) || ct.includes('+xml');
@@ -313,8 +314,10 @@ export class QjsSession {
       if(this.engine!==engine)return;
       this.dispatch({ kind: 'fetch_resolve', id: p.id, error: String((e && e.message) || e) });
       this.pump();
-    }
+    }finally{this.hostFetches.delete(controller);}
   }
+
+  cancelDocumentWork(){for(const timer of this.hostTimers)clearTimeout(timer);this.hostTimers.clear();for(const controller of this.hostFetches)controller.abort();this.hostFetches.clear();}
 
   recordNavigation(url,{index,replace=false,forcePush=false}={}) {
     if(Number.isInteger(index)&&this.navigationEntries[index]){this.navigationIndex=index;return;}
@@ -671,12 +674,13 @@ html { zoom: 1.6 !important; }
   /** 页面脚本管线：抽脚本 → 预取 → DOM 建立 → 经典脚本 → 模块 → settle → 序列化 */
   async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport, resourceBatch = 32, historyIndex, replaceHistory=false } = {}) {
     this.beginLoadBatch(resourceBatch);
-    this.pendingNavigation=null;this.pageLoad=null;
+    this.cancelDocumentWork();this.pendingNavigation=null;this.pageLoad=null;
     const enabled=executeScripts ?? true;this.recordNavigation(baseUrl,{index:historyIndex,replace:replaceHistory});
     // A new document gets a fresh VM: old globals, pending jobs and module
     // records must not survive navigation or an aborted page application.
+    const reusableInstance=this.engine?.instance;
     if(this.engine){this.engine.dispose();this.engine=null;}
-    const previousUrl=this.url;this.ensure();this.engine.callGlobal('eval',`globalThis.__document_referrer=${JSON.stringify(previousUrl==='about:blank'?'':new URL(previousUrl).origin===new URL(baseUrl).origin?previousUrl:new URL(previousUrl).origin+'/')}`);this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();this.renderFailed.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
+    const previousUrl=this.url;this.ensure(reusableInstance);this.engine.callGlobal('eval',`globalThis.__document_referrer=${JSON.stringify(previousUrl==='about:blank'?'':new URL(previousUrl).origin===new URL(baseUrl).origin?previousUrl:new URL(previousUrl).origin+'/')}`);this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();this.renderFailed.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
     this.dispatch({kind:'load_dom',html,baseUrl});
     const early=()=>{
       for(const item of this.cdpEarlyScripts||[]){
@@ -713,7 +717,7 @@ html { zoom: 1.6 !important; }
       if(this.pageStatus.status==='degraded'){
         // Only an exhausted execution scope needs a fresh VM to drop runaway jobs.
         if(job.pipeline?.executionAborted){
-          this.engine.dispose();this.engine=null;this.ensure();this.pushLoc();
+          const reusableInstance=this.engine.instance;this.engine.dispose();this.engine=null;this.ensure(reusableInstance);this.pushLoc();
           if(viewport)this.dispatch({kind:'viewport',...viewport});this.dispatch({kind:'load_dom',html,baseUrl});early();job.pipeline.domReady=false;
         }
         if(!job.pipeline?.domReady){this.dispatch({kind:'domready'});this.pump();}
@@ -905,6 +909,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
   }
 
   reset() {
+    this.cancelDocumentWork();
     if (this.engine) this.engine.dispose();
     this.engine = null;
     this.log = [];
@@ -983,7 +988,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
       if (request.method === 'GET' && path === '/state') {
         return Response.json({
           url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine, page:this.pageStatus||null,
-          durableObjectId:this.ctx.id?.toString()||null,
+          durableObjectId:this.ctx.id?.toString()||null,engineMemory:this.engine?.memoryStats()||null,
           proxy:publicProxy(this.proxy),loading:this.loadingState(),resourceCache:this.resourceCache.stats(),routes:this.routeStats,
           modCache: { entries: this.modCache.size, bytes: this.modCacheBytes, hits: this.modCacheHits, fetches: this.modCacheFetches },
         });

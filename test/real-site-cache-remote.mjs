@@ -18,7 +18,7 @@ async function connect(name,proxy){
 const target=process.env.QJSB_REAL_URL||'https://linux.do/t/topic/2999210';
 const report={target,at:new Date().toISOString(),phases:[]};let c;
 const idle=()=>new Promise(r=>setTimeout(r,Number(process.env.QJSB_PHASE_IDLE_MS)||0));
-const inspect=()=>c.value(`JSON.stringify({url:location.href,title:document.title,posts:document.querySelectorAll('.topic-post').length,cooked:[...document.querySelectorAll('.cooked')].map(n=>n.textContent).join(' '),header:!!document.querySelector('.d-header'),splash:!!document.querySelector('#d-splash'),links:[...document.querySelectorAll('a[href]')].map(a=>({text:a.textContent.trim().slice(0,100),href:a.href||new URL(a.getAttribute('href'),location.href).href})).filter(a=>a.href.includes('/t/'))})`);
+const inspect=()=>c.value(`JSON.stringify({url:location.href,title:document.title,posts:document.querySelectorAll('.topic-post').length,cooked:[...document.querySelectorAll('.cooked')].map(n=>n.textContent).join(' '),header:!!document.querySelector('.d-header'),splash:!!document.querySelector('#d-splash'),links:[...document.querySelectorAll('a[href]')].map(a=>({text:a.textContent.trim().slice(0,100),href:new URL(a.getAttribute('href'),location.href).href})).filter(a=>a.href.includes('/t/'))})`);
 
 async function navigate(url,label){
  const startedAt=new Date().toISOString(),before=await c.state(),start=performance.now(),nav=await c.send('Page.navigate',{url,resourceBatch:32});assert.ok(!nav.errorText,nav.errorText);let state=nav.loading,batches=1;
@@ -54,4 +54,4 @@ try{
  let loading=await c.send('Browser.getLoadingState');while(loading.status==='pending')loading=await c.send('Browser.continueLoading',{id:loading.id,requests:32});
  const returned=JSON.parse(await inspect());assert.equal(returned.title,a.document.title);assert.ok(returned.cooked.length>100);report.returned={document:returned,screenshot:await c.shot('returned-a')};report.finalState=await c.state();report.passed=true;
 }catch(e){report.error=e.stack;console.error(e.stack);process.exitCode=1;}
-finally{c?.close();fs.writeFileSync(out+'/result.json',JSON.stringify(report,null,2));}
+finally{if(c){try{await c.send('Browser.close');}catch{}}c?.close();fs.writeFileSync(out+'/result.json',JSON.stringify(report,null,2));}

@@ -6,7 +6,7 @@ export class ResourceCache {
   clear(){this.epoch++;this.entries.clear();this.pending.clear();this.bytes=0;}
   key(url,init){const h=[...new Headers(init.headers)].filter(([k])=>k!=='referer').sort((a,b)=>a[0].localeCompare(b[0]));return JSON.stringify([new URL(url).href,h,init.credentials||'same-origin']);}
   remove(key){const old=this.entries.get(key);if(old){this.bytes-=old.body.byteLength;this.entries.delete(key);}}
-  response(e){const r=new Response(e.body.slice(),{status:e.status,statusText:e.statusText,headers:e.headers});Object.defineProperty(r,'url',{value:e.url});return r;}
+  response(e){const r=new Response(e.body,{status:e.status,statusText:e.statusText,headers:e.headers});Object.defineProperty(r,'url',{value:e.url});return r;}
   async fetch(url,init={},load){
     const headers=new Headers(init.headers);
     if((init.method||'GET').toUpperCase()!=='GET'||init.body!=null||headers.has('range')||/no-cache|no-store/i.test(headers.get('cache-control')||'')||init.cache==='reload'||init.cache==='no-store')return load();

@@ -79,7 +79,7 @@ export class QjsEngine {
   constructor(opts = {}) {
     this.opts = opts;
     const state = { memory: null };
-    this.instance = new WebAssembly.Instance(wasmModule, { wasi_snapshot_preview1: wasiStubs(state), browser:{layout:(ptr,len,out,cap)=>{
+    this.instance = opts.instance || new WebAssembly.Instance(wasmModule, { wasi_snapshot_preview1: wasiStubs(state), browser:{layout:(ptr,len,out,cap)=>{
       try {
         const request=JSON.parse(TD.decode(new Uint8Array(state.memory.buffer,ptr,len)));
         const response=opts.layout ? opts.layout(request) : {error:'layout bridge unavailable'};
@@ -90,7 +90,7 @@ export class QjsEngine {
     }} });
     state.memory = this.instance.exports.memory;
     this.exports = this.instance.exports;
-    this.exports._initialize(); // reactor：先跑 wasm 构造器（malloc 初始化等）
+    if(!opts.instance)this.exports._initialize(); // reactor：先跑 wasm 构造器（malloc 初始化等）
     if (!this.exports.qjs_new()) throw new Error('qjs_new failed');
     this.exports.qjs_set_limits(
       opts.memBytes ?? 128 * 1024 * 1024,
@@ -198,6 +198,8 @@ export class QjsEngine {
   }
 
   setInterrupt(on, budget) { this.exports.qjs_set_interrupt(on ? 1 : 0, budget ?? 0); }
+
+  memoryStats(){return {...JSON.parse(this.#readPacked(this.exports.qjs_memory_usage())),linearBytes:this.exports.memory.buffer.byteLength};}
 
   dispose() {
     try { this.exports.qjs_free(); } catch { /* 已死则忽略 */ }

@@ -14,5 +14,6 @@ await s.continueLoading({id:s.pageLoad.id,requests:1});
 assert.equal(s.loadingState().status,'complete',JSON.stringify(s.pageStatus));
 assert.equal(s.engine.callGlobal('eval','document.querySelector("#result").textContent').value,'loaded');
 assert.equal(s.engine.callGlobal('eval','moduleRuns').value,1);assert.equal(s.engine.callGlobal('eval','bootRuns').value,1);
+assert.equal(s.engine.memoryStats().sourceBytes,0,'compiled sources must release transport copies');
 assert.deepEqual(urls,['https://test/feature.js','https://test/value.js']);
 s.reset();console.log('PASS runtime dynamic import expression, static dependency closure, resource-batch resume without repeating effects, and unused dynamic module stays unloaded');

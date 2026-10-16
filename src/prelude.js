@@ -159,7 +159,7 @@ export const PRELUDE = String.raw`
     constructor(){this.readyState=0;this.status=0;this.statusText='';this.responseURL='';this.responseType='';this.responseText='';this.response=null;this.timeout=0;this.withCredentials=false;this.upload={addEventListener(){},removeEventListener(){}};this.listeners=new Map();this.requestHeaders={};this.responseHeaders=new Headers();this.sent=false;}
     addEventListener(type,fn){let list=this.listeners.get(type);if(!list)this.listeners.set(type,list=new Set());list.add(fn);}
     removeEventListener(type,fn){this.listeners.get(type)?.delete(fn);}
-    dispatchEvent(event){const fn=this['on'+event.type];if(typeof fn==='function')fn.call(this,event);for(const listener of this.listeners.get(event.type)||[])typeof listener==='function'?listener.call(this,event):listener.handleEvent(event);return true;}
+    dispatchEvent(event){Object.defineProperty(event,'target',{value:this,configurable:true});Object.defineProperty(event,'currentTarget',{value:this,configurable:true});const fn=this['on'+event.type];if(typeof fn==='function')fn.call(this,event);for(const listener of this.listeners.get(event.type)||[])typeof listener==='function'?listener.call(this,event):listener.handleEvent(event);return true;}
     emit(type){this.dispatchEvent(new Event(type));}
     state(n){this.readyState=n;this.emit('readystatechange');}
     open(method,url,async=true){if(async===false)throw new Error('Synchronous XMLHttpRequest is unsupported');if(this.sent)this.abort();this.method=String(method).toUpperCase();this.url=new URL(String(url),document.baseURI).href;this.requestHeaders={};this.responseText='';this.status=0;this.state(1);}
@@ -215,7 +215,7 @@ export const PRELUDE = String.raw`
     start(){this.started=true;this.schedule();}
     close(){this.closed=true;this.queue=[];this.peer=null;}
     postMessage(value){if(this.closed||!this.peer||this.peer.closed)return;const data=structuredClone(value);this.peer.queue.push(data);this.peer.schedule();}
-    schedule(){if(!this.started||this.closed||this.scheduled||!this.queue.length)return;this.scheduled=true;setTimeout(()=>{this.scheduled=false;if(this.closed)return;const queued=this.queue.splice(0);for(const data of queued){const event=new Event('message');Object.assign(event,{data,origin:'',ports:[],source:null});if(typeof this.handler==='function')this.handler.call(this,event);for(const listener of this.listeners)listener.call(this,event);}this.schedule();},0);}
+    schedule(){if(!this.started||this.closed||this.scheduled||!this.queue.length)return;this.scheduled=true;setTimeout(()=>{this.scheduled=false;if(this.closed)return;const queued=this.queue.splice(0);for(const data of queued){const event=new Event('message');Object.assign(event,{data,origin:'',ports:[],source:null,target:this,currentTarget:this});if(typeof this.handler==='function')this.handler.call(this,event);for(const listener of this.listeners)listener.call(this,event);}this.schedule();},0);}
   }
   globalThis.MessagePort=MessagePort;
   globalThis.MessageChannel=class MessageChannel {constructor(){this.port1=new MessagePort();this.port2=new MessagePort();this.port1.peer=this.port2;this.port2.peer=this.port1;}};

@@ -25,8 +25,10 @@ if [[ -z "${WASI_SDK_PATH:-}" ]]; then
 fi
 CC="$WASI_SDK_PATH/bin/clang"
 SYSROOT="$WASI_SDK_PATH/share/wasi-sysroot"
-# Prefer execution speed over minimum binary size; keep overridable for profiling.
-CFLAGS=("${QJS_OPT_LEVEL:--O3}" --target=wasm32-wasip1 --sysroot="$SYSROOT"
+# Keep an optimization override for measured build comparisons.
+python3 "$ROOT/engine/patch-line-index.py"
+python3 "$ROOT/engine/patch-wasi-memory.py"
+CFLAGS=("${QJS_OPT_LEVEL:--Oz}" --target=wasm32-wasip1 --sysroot="$SYSROOT"
         -D__EMSCRIPTEN__ -D_GNU_SOURCE "-DCONFIG_VERSION=\"$VER\""
         # Intl + Temporal：这两个内建 quickjs 不装进 JS_NewContext，须宿主显式调
         # JS_AddIntrinsicIntl/Temporal（见 engine.c 的 qjs_new），而它们本身由这个

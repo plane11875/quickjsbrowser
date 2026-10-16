@@ -21,7 +21,7 @@ export const OBSERVER_WIRE=String.raw`
     measure(target,old){const b=target.getBoundingClientRect(),root=this.root&&this.root.nodeType!==9?this.root.getBoundingClientRect():{left:0,top:0,right:innerWidth,bottom:innerHeight,width:innerWidth,height:innerHeight};
       const parts=this.rootMargin.trim().split(/\s+/),m=parts.map(v=>parseFloat(v)*(v.endsWith('%')?root.width/100:1));const [top,right=top,bottom=top,left=right]=m;
       const rootBounds={left:root.left-left,top:root.top-top,right:root.right+right,bottom:root.bottom+bottom};rootBounds.width=rootBounds.right-rootBounds.left;rootBounds.height=rootBounds.bottom-rootBounds.top;rootBounds.x=rootBounds.left;rootBounds.y=rootBounds.top;
-      const x=Math.max(rootBounds.left,b.left),y=Math.max(rootBounds.top,b.top),r=Math.min(rootBounds.right,b.right),d=Math.min(rootBounds.bottom,b.bottom),isIntersecting=target.isConnected&&r>=x&&d>=y;
+      const x=Math.max(rootBounds.left,b.left),y=Math.max(rootBounds.top,b.top),r=Math.min(rootBounds.right,b.right),d=Math.min(rootBounds.bottom,b.bottom),isIntersecting=target.isConnected&&(b.width>0||b.height>0)&&r>=x&&d>=y;
       const width=Math.max(0,r-x),height=Math.max(0,d-y),ratio=b.width*b.height?width*height/(b.width*b.height):isIntersecting?1:0;
       if(old&&old.isIntersecting===isIntersecting&&!this.thresholds.some(t=>(old.intersectionRatio<t)!==(ratio<t)))return null;
       return {target,time:performance.now(),rootBounds,boundingClientRect:b,intersectionRect:{x,y,left:x,top:y,right:x+width,bottom:y+height,width,height},intersectionRatio:ratio,isIntersecting};

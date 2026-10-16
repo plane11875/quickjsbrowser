@@ -155,7 +155,7 @@ export class CdpConnection {
     try {
       // Browser.close 特殊：先回包再断连
       if (method === 'Browser.close') {
-        this.#result(id, {});
+        this.#result(id, {});this.session.reset();
         setTimeout(() => { try { this.ws.close(1000, 'Browser.close'); } catch (e) { /* ignore */ } }, 50);
         return;
       }
