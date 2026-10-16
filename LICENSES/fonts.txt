@@ -1,0 +1,21 @@
+sans-bold.ttf
+(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+Noto Sans JP Thin
+
+sc-regular.ttf
+Digitized data copyright Google Corporation © 2006
+Droid Sans Fallback
+Licensed under the Apache License, Version 2.0
+http://www.apache.org/licenses/LICENSE-2.0
+
+sans-regular.ttf
+(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+Noto Sans JP Thin
+
+mono-regular.ttf
+Copyright 2017 IBM Corp. All rights reserved.
+IBM Plex Mono
+
+jp-regular.ttf
+(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+Noto Sans JP Thin
