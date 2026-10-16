@@ -90,7 +90,7 @@ fn font_context() -> FontContext {
         let config = generics().lock().unwrap();
         let names = config.get(key).cloned().unwrap_or_else(|| default.into_iter().map(String::from).collect());
         let ids: Vec<_> = names.iter().flat_map(|name| aliases.get(name).into_iter().flatten().copied()).collect();
-        context.collection.set_generic_families(generic, ids);
+        context.collection.set_generic_families(generic, ids.into_iter());
     }
     context
 }
