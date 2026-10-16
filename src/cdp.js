@@ -65,7 +65,7 @@ export class CdpConnection {
       return;
     }
     if (frame && frame.sessionId !== undefined) this.clientFlatten = true;
-    this.chain = this.chain.then(() => this.#handleFrame(frame)).catch((e) => {
+    this.chain = this.chain.then(() => this.session.withOperation(()=>this.#handleFrame(frame))).catch((e) => {
       if (frame && frame.id != null) {
         this.#send({ id: frame.id, error: { code: -32000, message: String((e && e.message) || e) } });
       }
@@ -73,14 +73,14 @@ export class CdpConnection {
   }
 
   requestNavigation() {
-    this.chain=this.chain.then(async()=>{
+    this.chain=this.chain.then(()=>this.session.withOperation(async()=>{
       for(let n=0;this.session.pendingNavigation&&n<8;n++){
         const url=this.session.pendingNavigation;this.session.pendingNavigation=null;
         const result=await this.#navigate({url});
         if(result.errorText)throw new Error(result.errorText);
       }
       const callbacks=this.afterRespond.splice(0);for(const cb of callbacks)cb();
-    }).catch(e=>{this.session.pushLog('[navigation-error] '+e.message);});
+    })).catch(e=>{this.session.pushLog('[navigation-error] '+e.message);});
   }
 
   close() {
@@ -282,7 +282,7 @@ export class CdpConnection {
   // ---------- 导航管线 ----------
   async #navigate(params) {
     const S = this.session;
-    S.ensure();
+    S.ensure();this.waitingForLoad=false;
     const url = String(params.url || 'about:blank');
     const loaderId = 'ld-' + (++this.navSeq).toString(36) + '-' + Date.now().toString(36);
     this.loaderId = loaderId;
@@ -312,7 +312,7 @@ export class CdpConnection {
     // Emulation.setDeviceMetricsOverride，故这里用当次 metrics）。
     S.dispatch({ kind: 'viewport', w: this.metrics.width || 1024, h: this.metrics.height || 768 });
     try {
-      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1024,h:this.metrics.height||768} });
+      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1024,h:this.metrics.height||768},resourceBatch:params.resourceBatch??32 });
     } catch (e) {
       S.pushLog('[cdp-nav-error] ' + String((e && e.message) || e));
       return {errorText:'document initialization failed: '+String(e.message||e),frameId:FRAME_ID};
@@ -323,6 +323,7 @@ export class CdpConnection {
       this.emitContextDestroyedAndCleared();
       this.emit('Page.frameNavigated', { frame: this.frameJson(loaderIdFinal) }, true);
       this.emitContextCreated(true);
+      if(S.pageLoad?.pending){this.waitingForLoad=true;this.emit('Browser.loadingProgress',S.loadingState(),true);return;}
       if (this.lifecycleEnabled) {
         for (const name of ['init', 'DOMContentLoaded', 'load', 'networkIdle']) {
           this.emit('Page.lifecycleEvent', { frameId: FRAME_ID, loaderId: loaderIdFinal, name, timestamp: Date.now() }, true);
@@ -331,7 +332,16 @@ export class CdpConnection {
       this.emit('Page.loadEventFired', { frameId: FRAME_ID, loaderId: loaderIdFinal, timestamp: Date.now() }, true);
       this.emit('Page.frameStoppedLoading', { frameId: FRAME_ID }, true);
     });
-    return { frameId: FRAME_ID, loaderId };
+    return { frameId: FRAME_ID, loaderId, loading:S.loadingState() };
+  }
+
+  onLoadingComplete() {
+    if(!this.waitingForLoad)return;
+    this.waitingForLoad=false;
+    this.emit('Browser.loadingProgress',this.session.loadingState(),true);
+    if(this.lifecycleEnabled)for(const name of ['DOMContentLoaded','load','networkIdle'])this.emit('Page.lifecycleEvent',{frameId:FRAME_ID,loaderId:this.loaderId,name,timestamp:Date.now()},true);
+    this.emit('Page.loadEventFired',{timestamp:Date.now()},true);
+    this.emit('Page.frameStoppedLoading',{frameId:FRAME_ID},true);
   }
 
   // ---------- 方法表 ----------
@@ -344,6 +354,8 @@ export class CdpConnection {
       await S.prepareLayout(html,S.url,this.metrics.width,this.metrics.height);
       const r=S.engine.callGlobal('__input_mouse',JSON.stringify(params));if(!r.ok)throw new Error(r.error||'input dispatch failed');S.pump();return {};
     },
+    'Browser.getLoadingState':function(){return this.session.loadingState();},
+    'Browser.continueLoading':async function(params){return this.session.continueLoading(params);},
     'Browser.setProxy':function(params){return {proxy:this.session.configureProxy(params.proxy??params.server??((params.ip||params.host)?params:null))};},
     // ---- Browser ----
     'Browser.getVersion': () => ({

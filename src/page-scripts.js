@@ -1,7 +1,7 @@
 import { ModuleResolver, moduleSpecifiers } from './module-resolver.js';
 import { requestHeaders } from './fingerprint.js';
 
-export const PAGE_LIMITS = Object.freeze({ sourceBytes: 512*1024, totalBytes: 2*1024*1024, requests: 32, networkMs: 5000, interrupts: 1000, tasks: 256, rounds: 32 });
+export const PAGE_LIMITS = Object.freeze({ sourceBytes: 512*1024, totalBytes: 2*1024*1024, requests: 256, networkMs: 5000, interrupts: 1000, tasks: 256, rounds: 32 });
 const encoder = new TextEncoder();
 const size = (s) => encoder.encode(s).length;
 
@@ -12,6 +12,7 @@ export class PageScripts {
     this.resolver = new ModuleResolver(this.resourceBase, manifest.maps);
     this.controller = new AbortController();
     this.requests = 0; this.bytes = 0; this.executed = 0; this.tasks = 0;
+    this.prepared = new Map(); this.paused = false;
     this.errors = []; this.sources = new Map(); this.nodes = new Map(); this.timers = []; this.fetches = [];
   }
   error(reason, url = this.base, detail = '') {
@@ -30,8 +31,8 @@ export class PageScripts {
   async request(url, init = {}, limit = PAGE_LIMITS.sourceBytes) {
     if (this.controller.signal.aborted || this.requests >= PAGE_LIMITS.requests) throw new Error('request/time budget exhausted');
     if (!/^https?:\/\//i.test(url)) throw new Error('unsupported resource scheme');
+    const r = await this.s.fetchLoadingResource(url, { ...init, signal: this.controller.signal, redirect:'follow' }, { allowRelay:false });
     this.requests++;
-    const r = await this.s.smartFetch(url, { ...init, signal: this.controller.signal, redirect:'follow' }, { allowRelay:false });
     if (!r.ok) { r.body?.cancel().catch(()=>{}); throw new Error(`HTTP ${r.status}`); }
     if (+r.headers.get('content-length') > limit) { r.body?.cancel().catch(()=>{}); throw new Error('source size budget exceeded before download'); }
     const reader = r.body?.getReader(); let n=0; const parts=[];
@@ -59,7 +60,7 @@ export class PageScripts {
         if (!this.countSource(text,url)) return null;
         if(module) this.s.cacheModule(url,{text,kind:0});
         return text;
-      } catch(e) { this.error('script-fetch',url,e.message); return null; }
+      } catch(e) { if(e.loadingPending){this.paused=true;this.sources.delete(key);return null;} this.error('script-fetch',url,e.message); return null; }
     })();
     this.sources.set(key,pending);return pending;
   }
@@ -85,7 +86,7 @@ export class PageScripts {
       if(ok && !this.s.registerModule(url,{text,kind:0})) {this.error('module-register',url);ok=false;}
       return ok;
     })();
-    this.nodes.set(url,pending);return pending;
+    this.nodes.set(url,pending);const ok=await pending;if(!ok)this.nodes.delete(url);return ok;
   }
   drain() {
     this.s.engine.drainJobs(128);
@@ -121,15 +122,17 @@ export class PageScripts {
     if(this.s.engine.jobPending()||this.timers.length||this.fetches.length)this.error('settle-budget');
   }
   async run() {
+    this.controller=new AbortController();this.paused=false;
     const timer=setTimeout(()=>this.controller.abort(),PAGE_LIMITS.networkMs);
-    const scripts=this.manifest.scripts.slice(0,32);
-    if(this.manifest.scripts.length>32)this.error('script-count');
+    const scripts=this.manifest.scripts.slice(0,128);
+    if(this.manifest.scripts.length>128)this.error('script-count');
     const required=new Set(scripts.filter(s=>s.src).map(s=>new URL(s.src,this.resourceBase).href)).size;
     if(required>PAGE_LIMITS.requests)this.error('request-budget',this.base,`${required} script URLs exceed ${PAGE_LIMITS.requests}`);
-    const prepared=new Map();
+    const prepared=this.prepared;
     try{
       if(this.errors.length)return {mode:'bounded',status:'degraded',executed:0,requests:0,sourceBytes:0,limits:PAGE_LIMITS,errors:this.errors};
       await this.s.mapLimit(scripts,4,async(script)=>{
+        if(prepared.get(script)?.text!=null)return;
         const url=script.src?new URL(script.src,this.resourceBase).href:`${this.resourceBase}#inline-${script.index}`;
         const text=script.src?await this.source(url,script.module):this.countSource(script.code,url)?script.code:null;
         prepared.set(script,{url,text});
@@ -138,9 +141,12 @@ export class PageScripts {
       // decline it before partially running the application's classic scripts.
       for(const script of scripts.filter((s)=>s.module)){
         const p=prepared.get(script);
-        if(p?.text!=null&&!await this.graph(p.url,p.text))this.error('module-unavailable',p.url);
+        if(p?.text!=null&&!await this.graph(p.url,p.text)&&!this.paused)this.error('module-unavailable',p.url);
       }
+      if(this.paused&&!this.errors.length)return {mode:'bounded',status:'pending',executed:0,requests:this.requests,sourceBytes:this.bytes,limits:PAGE_LIMITS,errors:[]};
       if(!this.errors.length){
+        // Preparation is resumable; execution must run once without replaying effects.
+        this.s.loadBatchRemaining=null;
         this.s.engine.callGlobal('eval','globalThis.__page_active=true');
         this.s.engine.beginScope(PAGE_LIMITS.interrupts,PAGE_LIMITS.sourceBytes,PAGE_LIMITS.totalBytes);
         try{

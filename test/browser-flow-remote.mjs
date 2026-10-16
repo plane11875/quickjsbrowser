@@ -28,5 +28,16 @@ await run('external-module',async(c,r)=>{await c.send('Emulation.setScriptExecut
 await run('example-direct',async(c,r)=>{const nav=await c.send('Page.navigate',{url:'https://example.com/'});assert.ok(!nav.errorText,nav.errorText);r.meta=await c.value(`JSON.stringify({title:document.title,text:document.body.textContent,html:document.documentElement.outerHTML.slice(0,3000)})`);r.page=(await c.state()).page;r.screenshot=await c.shot('example');assert.equal(JSON.parse(r.meta).title,'Example Domain');assert.ok(JSON.parse(r.meta).html.includes('iana.org/help/example-domains'));});
 await run('explicit-broken-proxy',async(c,r)=>{const nav=await c.send('Page.navigate',{url:'https://example.com/'});assert.ok(nav.errorText,'bad explicit proxy must not succeed by direct fallback');const state=await c.state();assert.equal(state.proxy.type,'sni');r.route=state.proxy;r.expectedFailure=true;},'127.0.0.1:1');
 if(secrets.QJSB_RELAY_IP)await run('linux-explicit-sni',async(c,r)=>{const [host,port]=secrets.QJSB_RELAY_IP.split(':');assert.equal((await c.state()).proxy.type,'sni');await c.send('Browser.setProxy',{ip:host,port:Number(port)||443});const nav=await c.send('Page.navigate',{url:'https://linux.do/t/topic/3029893'});if(nav.errorText){r.unavailable=nav.errorText;r.pass=false;throw new Error(nav.errorText);}r.title=await c.value('document.title');r.screenshot=await c.shot('linux-sni');r.page=(await c.state()).page;},secrets.QJSB_RELAY_IP);
+await run('resumable-88',async(c,r)=>{
+ const ref=process.env.QJSB_FIXTURE_REF||'main';
+ const root=`https://raw.githubusercontent.com/plane11875/quickjsbrowser/${ref}/test/fixtures/`;
+ const html=`<html><head>${Array.from({length:45},(_,i)=>`<link rel="stylesheet" href="${root}resume-style.css?i=${i}">`).join('')}${Array.from({length:43},(_,i)=>`<script src="${root}resume-script.js?i=${i}"></script>`).join('')}</head><body><div id="out">waiting</div></body></html>`;
+ await c.send('Page.enable');const nav=await c.send('Page.navigate',{url:data(html),resourceBatch:40});assert.ok(!nav.errorText,nav.errorText);
+ let state=nav.loading;r.batches=[state];assert.equal(state.status,'pending');assert.equal(await c.value('typeof resumeRuns'),'undefined');assert.equal(c.events.filter(e=>e.method==='Page.loadEventFired').length,0);
+ for(let i=0;state.status==='pending'&&i<8;i++){state=await c.send('Browser.continueLoading',{id:state.id,requests:40});r.batches.push(state);}
+ assert.equal(state.status,'complete',JSON.stringify(state));assert.equal(state.page.status,'executed');assert.equal(state.cachedResources,45);assert.equal(state.cachedScripts,43);assert.equal(await c.value('resumeRuns'),43);assert.equal(await c.value(`document.querySelector('#out').getBoundingClientRect().width`),123);
+ await c.send('Browser.continueLoading',{id:state.id,requests:40});assert.equal(await c.value('resumeRuns'),43);r.screenshot=await c.shot('resumable-88');
+});
+
 console.log('LIVE_FLOW_DONE');
 if(reports.some(r=>!r.pass))process.exitCode=1;
