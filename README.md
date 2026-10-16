@@ -66,3 +66,7 @@ npm run test:remote
 - `test/`：本地套件、浮动回归和线上 CDP 验证。
 
 CDP 仍是子集：对象句柄、多页面隔离、完整 Network 事件等尚未实现。会话主要保存在 DO 内存中。
+
+## Performance-bounded page scripts
+
+Small page applications can use import maps, real DOM observers and bounded asynchronous work. Script inputs, subrequests and execution have explicit budgets; degraded and noscript fallback output is reported to clients. See [capabilities and limits](docs/bounded-browser-capabilities.md) and [deployed validation](docs/bounded-browser-validation-2026-10-16.md).
