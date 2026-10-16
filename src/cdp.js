@@ -303,7 +303,7 @@ export class CdpConnection {
     // Emulation.setDeviceMetricsOverride，故这里用当次 metrics）。
     S.dispatch({ kind: 'viewport', w: this.metrics.width || 1280, h: this.metrics.height || 900 });
     try {
-      await S.runPageScripts(html, finalUrl);
+      await S.runPageScripts(html, finalUrl, { serialize: false });
     } catch (e) {
       S.pushLog('[cdp-nav-error] ' + String((e && e.message) || e));
     }

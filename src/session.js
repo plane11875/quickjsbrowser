@@ -85,8 +85,8 @@ const INLINE_SCRIPT_MAX = 100_000;
 
 // ---- 资源过滤：按「对画面有没有用」筛，而不是按数量砍 ----
 // blitz 不执行 JS，所以为渲染去抓 .js 是 100% 的无用功——脚本永远改变不了这张图。
-// linux.do 一次截图 miss 87 个子资源，其中绝大多数是 JS 包（Discourse 的应用包、
-// 各种 chunk），全是白抓。留下的只该是真正影响像素的：样式表、字体、图片。
+// 资源发现可能包含 script preload；它们不参与静态绘图。
+// 留下影响像素的样式表、字体和图片。
 //
 // 埋点/统计类同理：它们不改画面，只消耗出站次数和 CPU。
 const DROP_HOST = [
@@ -547,7 +547,7 @@ html { zoom: 1.6 !important; }
       let missed;
       try { missed = missed_resources(); } catch (e) { break; }
       if (!missed || !missed.length) break;
-      let todo = missed.filter((u) => !tried.has(u));
+      let todo = missed.filter((u) => !tried.has(u) && worthFetchingForRender(u));
       for (const u of missed) tried.add(u);
       if (!todo.length) { this.pushLog(`[resources] pass ${pass + 1}: 无新增，停止`); break; }
       const room = budget - spent;
@@ -618,7 +618,12 @@ html { zoom: 1.6 !important; }
   }
 
   /** 页面脚本管线：抽脚本 → 预取 → DOM 建立 → 经典脚本 → 模块 → settle → 序列化 */
-  async runPageScripts(html, baseUrl) {
+  async runPageScripts(html, baseUrl, { serialize = true } = {}) {
+    // Both HTTP screenshots and CDP navigation must use the same site policy.
+    // Keep the DOM and automation scripts available even when page JS is disabled.
+    const lim = siteLimitsFor(baseUrl);
+    const executeScripts = lim?.js !== false;
+    if (!executeScripts) this.pushLog(`[site-limit] ${lim.host}: 跳过页面脚本，保留 DOM 和自动化脚本`);
     this.ensure();
     this.url = baseUrl;
     this.pushLoc();
@@ -627,6 +632,7 @@ html { zoom: 1.6 !important; }
     this.engine.runGC();
     const scripts = [];
     const stripped = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (m, attrs, body) => {
+      if (!executeScripts) return m;
       const type = (/\btype\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs)?.slice(2).find(Boolean) || '').trim().toLowerCase();
       const isJs = !type || ['text/javascript', 'application/javascript', 'module'].includes(type);
       if (!isJs) return m;
@@ -642,10 +648,10 @@ html { zoom: 1.6 !important; }
     });
     // 外链经典脚本源码预取
     const external = new Map();
-    for (const s of scripts) {
-      if (s.module || !s.src) continue;
-      const abs = new URL(s.src, baseUrl).href;
-      if (external.has(abs)) continue;
+    const classicUrls = [...new Set(scripts.filter((s) => !s.module && s.src)
+      .map((s) => new URL(s.src, baseUrl).href))];
+    // Fetch concurrently; the execution loop below still preserves document order.
+    await this.mapLimit(classicUrls, PREFETCH_CONCURRENCY, async (abs) => {
       try {
         // 外链经典脚本：Chrome 对 classic script 发 no-cors 模式（不发 Origin）
         const r = await this.smartFetch(abs, {
@@ -655,7 +661,7 @@ html { zoom: 1.6 !important; }
         if (r.ok) external.set(abs, await r.text());
         else this.pushLog(`[script-miss] ${abs} (${r.status})`);
       } catch (e) { this.pushLog(`[script-miss] ${abs}`); }
-    }
+    });
     // 模块图预取 + 注册
     const moduleEntries = [];
     for (const s of scripts) {
@@ -714,6 +720,9 @@ html { zoom: 1.6 !important; }
       }
       this.engine.drainJobs();
     }
+    this.pushLog(`[page-scripts] enabled=${executeScripts} classic=${classicUrls.length} modules=${moduleEntries.length}`);
+    // CDP keeps the live DOM; serializing it here only throws away a full copy.
+    if (!serialize) return;
     const out = this.engine.callGlobal('__dom_html');
     return out.ok && out.value ? out.value : html;
   }
