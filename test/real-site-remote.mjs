@@ -19,10 +19,11 @@ assert.ok(secrets.QJSB_RELAY_IP,'Set QJSB_RELAY_IP to select the SNI relay expli
 const report={target,at:new Date().toISOString(),viewport:{width:1024,height:768},scriptExecution:'explicitly enabled',route:'configured SNI relay'};
 let c;
 try{
- c=await connect('real-topic-2999210',secrets.QJSB_RELAY_IP);
+ c=await connect('real-topic-2999210',secrets.QJSB_RELAY_IP);report.sid=c.sid;
  await c.send('Page.enable');await c.send('Runtime.enable');
  await c.send('Emulation.setDeviceMetricsOverride',{width:1024,height:768,deviceScaleFactor:1,mobile:false});
  await c.send('Emulation.setScriptExecutionDisabled',{value:false});
+ const initialState=await c.state();report.durableObjectId=initialState.durableObjectId;fs.writeFileSync(out+'/result.json',JSON.stringify(report,null,2));
  const start=performance.now();const nav=await c.send('Page.navigate',{url:target,resourceBatch:32});
  report.navigationMs=Math.round(performance.now()-start);report.navigation=nav;
  if(nav.errorText)throw new Error(nav.errorText);
@@ -34,7 +35,7 @@ try{
  report.document=JSON.parse(await c.value(`JSON.stringify({url:location.href,title:document.title,text:document.body.textContent.slice(0,12000),links:[...document.querySelectorAll('a[href]')].slice(0,30).map(a=>({text:a.textContent,href:a.href}))})`));
  fs.writeFileSync(out+'/loaded-dom.html',await c.value('document.documentElement.outerHTML'));
  report.screenshot=await c.shot('linux-topic-2999210');
- report.page=(await c.state()).page;
+ const runtimeState=await c.state();report.page=runtimeState.page;report.durableObjectId=runtimeState.durableObjectId;
  report.applicationComplete=state.status==='complete'&&report.page.status==='executed';
  if(!report.applicationComplete)process.exitCode=2;
  console.log(JSON.stringify({target,title:report.document.title,status:state.status,page:report.page,batches:report.batches.map(b=>({stage:b.stage,status:b.status,cachedResources:b.cachedResources,cachedScripts:b.cachedScripts,remainingResources:b.remainingResources})),screenshot:report.screenshot,applicationComplete:report.applicationComplete}));

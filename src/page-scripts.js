@@ -1,7 +1,7 @@
 import { ModuleResolver, moduleSpecifiers } from './module-resolver.js';
 import { requestHeaders } from './fingerprint.js';
 
-export const PAGE_LIMITS = Object.freeze({ sourceBytes: 512*1024, totalBytes: 2*1024*1024, requests: 256, networkMs: 5000, interrupts: 1000, tasks: 256, rounds: 32 });
+export const PAGE_LIMITS = Object.freeze({ sourceBytes: 32*1024*1024, totalBytes: 32*1024*1024, requests: 256, networkMs: 30000, interrupts: 30000, tasks: 256, rounds: 32 });
 const encoder = new TextEncoder();
 const size = (s) => encoder.encode(s).length;
 
@@ -12,7 +12,7 @@ export class PageScripts {
     this.resolver = new ModuleResolver(this.resourceBase, manifest.maps);
     this.controller = new AbortController();
     this.requests = 0; this.bytes = 0; this.executed = 0; this.tasks = 0;
-    this.prepared = new Map(); this.paused = false;
+    this.prepared = new Map(); this.paused = false;this.domReady=false;this.executionAborted=false;
     this.errors = []; this.sources = new Map(); this.nodes = new Map(); this.timers = []; this.fetches = [];
   }
   error(reason, url = this.base, detail = '') {
@@ -73,7 +73,7 @@ export class PageScripts {
       if(text==null) return false;
       let imports;
       try{imports=moduleSpecifiers(text);}catch(e){this.error('module-parse',url,e.message);return false;}
-      if(imports.length>32){this.error('module-count',url);return false;}
+      if(imports.length>1024){this.error('module-count',url);return false;}
       const branch=new Set(ancestors);branch.add(url);
       let ok=true;
       // Walk in source order: pending siblings must never deadlock on cyclic graphs.
@@ -98,10 +98,10 @@ export class PageScripts {
       else if(t.kind==='page_error'||t.kind==='exception'||t.kind==='unhandled_rejection') this.error(t.kind,t.payload.url||this.base,t.payload);
       else this.s.handleTask(t);
     }
-    if(this.s.engine.scopeExhausted())this.error('execution-budget');
+    if(this.s.engine.scopeExhausted()){this.executionAborted=true;this.error('execution-budget');}
   }
   async settle() {
-    for(let round=0;round<PAGE_LIMITS.rounds && !this.errors.length;round++){
+    for(let round=0;round<PAGE_LIMITS.rounds && !this.s.engine.scopeExhausted();round++){
       this.drain();
       const fetches=this.fetches.splice(0),timers=this.timers.splice(0);
       if(!fetches.length&&!timers.length&&!this.s.engine.jobPending())return;
@@ -119,7 +119,7 @@ export class PageScripts {
       }
     }
     this.drain();
-    if(this.s.engine.jobPending()||this.timers.length||this.fetches.length)this.error('settle-budget');
+    if(this.s.engine.jobPending()||this.timers.length||this.fetches.length){this.executionAborted=true;this.error('settle-budget');}
   }
   async run() {
     this.controller=new AbortController();this.paused=false;
@@ -128,23 +128,22 @@ export class PageScripts {
     if(this.manifest.scripts.length>128)this.error('script-count');
     const required=new Set(scripts.filter(s=>s.src).map(s=>new URL(s.src,this.resourceBase).href)).size;
     if(required>PAGE_LIMITS.requests)this.error('request-budget',this.base,`${required} script URLs exceed ${PAGE_LIMITS.requests}`);
-    const prepared=this.prepared;
+    const prepared=this.prepared,runnableModules=new Set();
     try{
-      if(this.errors.length)return {mode:'bounded',status:'degraded',executed:0,requests:0,sourceBytes:0,limits:PAGE_LIMITS,errors:this.errors};
       await this.s.mapLimit(scripts,4,async(script)=>{
         if(prepared.get(script)?.text!=null)return;
         const url=script.src?new URL(script.src,this.resourceBase).href:`${this.resourceBase}#inline-${script.index}`;
         const text=script.src?await this.source(url,script.module):this.countSource(script.code,url)?script.code:null;
         prepared.set(script,{url,text});
       });
-      // Any required module that cannot load makes execution non-transactional;
-      // decline it before partially running the application's classic scripts.
+      // Prepare each module graph independently; a missing script must not block
+      // the remaining scripts in the document.
       for(const script of scripts.filter((s)=>s.module)){
         const p=prepared.get(script);
-        if(p?.text!=null&&!await this.graph(p.url,p.text)&&!this.paused)this.error('module-unavailable',p.url);
+        if(p?.text!=null){if(await this.graph(p.url,p.text))runnableModules.add(script);else if(!this.paused)this.error('module-unavailable',p.url);}
       }
-      if(this.paused&&!this.errors.length)return {mode:'bounded',status:'pending',executed:0,requests:this.requests,sourceBytes:this.bytes,limits:PAGE_LIMITS,errors:[]};
-      if(!this.errors.length){
+      if(this.paused)return {mode:'bounded',status:'pending',executed:0,requests:this.requests,sourceBytes:this.bytes,limits:PAGE_LIMITS,errors:[]};
+      {
         // Preparation is resumable; execution must run once without replaying effects.
         this.s.loadBatchRemaining=null;
         this.s.engine.callGlobal('eval','globalThis.__page_active=true');
@@ -155,15 +154,15 @@ export class PageScripts {
             const r=this.s.engine.callGlobal('__run_page_script',JSON.stringify({code:p.text,url:p.url,index:script.index}));
             this.executed++;
             if(!r.ok||r.value?.error)this.error('classic-script',p.url,r.value?.error||r.error);
-            this.drain();if(this.errors.length)break;
+            this.drain();if(this.s.engine.scopeExhausted())break;
           }
           for(const script of scripts.filter((s)=>s.module)){
-            if(this.errors.length)break;const p=prepared.get(script);if(p?.text==null)continue;
+            if(this.s.engine.scopeExhausted())break;const p=prepared.get(script);if(p?.text==null||!runnableModules.has(script))continue;
             const code=`import(${JSON.stringify(p.url)}).catch(e=>__report_page_error(e,${JSON.stringify(p.url)}));`;
             if(this.s.engine.eval(code,this.base,false))this.error('module-eval',p.url);
             this.executed++;this.drain();
           }
-          if(!this.errors.length){this.s.dispatch({kind:'domready'});await this.settle();}
+          if(!this.s.engine.scopeExhausted()){this.domReady=true;this.s.dispatch({kind:'domready'});await this.settle();}
         }finally{this.s.engine.endScope();this.s.engine.callGlobal('eval','globalThis.__page_active=false');}
       }
     }finally{clearTimeout(timer);this.controller.abort();}

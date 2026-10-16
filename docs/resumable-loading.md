@@ -40,8 +40,7 @@ requests. The smaller default reserves headroom. Platform quota errors suspend
 preparation; the next incoming command/request supplies the next invocation.
 Source size, execution, module-depth, memory and network deadlines remain separate
 limits. Batch loading does not implement missing Web APIs or bypass script errors.
-The existing linux.do default script policy is unchanged; explicitly enabling JS
-still encounters independent bundle-size and compatibility checks.
+Page JavaScript now runs by default on linux.do too; the old site-specific disable policy is removed. Source memory and API compatibility checks remain independent.
 
 Validation: the local integration test loads 45 stylesheets and 43 scripts in
 40/40/8 batches, checks one fetch per URL, exactly-once ordered execution, retained
@@ -64,8 +63,7 @@ used one WebSocket and returned these measured progress snapshots:
 The final DOM reported 43 script runs and a CSS width of 123px. Repeating the
 completed continuation left the script count at 43. Existing interactive click,
 link navigation, module loading, direct example.com, invalid explicit proxy and
-linux.do through the selected SNI relay also passed. The linux.do case validates
-its existing static policy, not full Discourse application execution.
+linux.do through the selected SNI relay also passed. That historical linux.do case validated the then-existing static policy, not full Discourse application execution.
 
 Cloudflare documents [subrequests per invocation](https://developers.cloudflare.com/workers/platform/limits/#subrequests)
 and [Durable Object CPU limits](https://developers.cloudflare.com/durable-objects/platform/limits/).

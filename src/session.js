@@ -96,23 +96,6 @@ export function worthFetchingForRender(u) {
   return true;
 }
 
-// ---- 站点级限制 ----
-// 资源受限的站点逐个配置，一套参数打不了天下。maxResources = 每张图最多补抓多少个子资源
-// （不填 = 不限，交给 worthFetchingForRender 按用途筛）。
-//
-// linux.do 是主人指定的样本，公认的资源黑洞：开页就发几十个 JS 包。关掉 JS 执行是因为
-// 它的多 MB 应用模块超出受控执行预算。默认静态；显式开启 JS 时按统一预算尝试，
-// 超限会给出原因并回退，不再进入昂贵的编译/模块求值。
-const SITE_LIMITS = [
-  { host: 'linux.do', js: false },
-];
-
-function siteLimitsFor(url) {
-  let host = '';
-  try { host = new URL(url).hostname; } catch (e) { return null; }
-  return SITE_LIMITS.find((s) => host === s.host || host.endsWith('.' + s.host)) || null;
-}
-
 export class QjsSession {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -659,8 +642,7 @@ html { zoom: 1.6 !important; }
   async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport, resourceBatch = 32 } = {}) {
     this.beginLoadBatch(resourceBatch);
     this.pendingNavigation=null;
-    const lim=siteLimitsFor(baseUrl);
-    const enabled=executeScripts ?? lim?.js!==false;
+    const enabled=executeScripts ?? true;
     // A new document gets a fresh VM: old globals, pending jobs and module
     // records must not survive navigation or an aborted page application.
     if(this.engine){this.engine.dispose();this.engine=null;}
@@ -676,7 +658,9 @@ html { zoom: 1.6 !important; }
     early();
     const manifest=this.engine.callGlobal('__page_manifest').value;
     if(!manifest)throw new Error('DOM manifest failed');
-    this.pageLoad={id:crypto.randomUUID(),html,baseUrl,viewport,enabled,manifest,early,stage:'resources',pending:true,pipeline:null};
+    if(enabled)this.engine.callGlobal('eval',`for(const n of document.querySelectorAll('noscript'))n.remove()`);
+    const layoutHtml=this.engine.callGlobal('__dom_html').value||html;
+    this.pageLoad={id:crypto.randomUUID(),html,layoutHtml,baseUrl,viewport,enabled,manifest,early,stage:'resources',pending:true,pipeline:null};
     await this.advancePageLoad();
     if(serialize)return this.engine.callGlobal('__dom_html').value||html;
   }
@@ -685,32 +669,31 @@ html { zoom: 1.6 !important; }
     const job=this.pageLoad;
     const {html,baseUrl,viewport,enabled,manifest,early}=job;
     if(job.stage==='resources'){
-      await this.prepareLayout(html,baseUrl);
+      await this.prepareLayout(job.layoutHtml,baseUrl);
       if(this.renderPending.length){
         this.pageStatus={mode:'bounded',status:'pending',rendering:'partial',executed:0,errors:[]};return;
       }
       job.stage='scripts';
     }
     if(enabled){
-      // On failure rebuild the original DOM and trusted automation in a clean VM.
+      // Preserve ordinary page exceptions and mutations; isolate runaway jobs only.
       try{this.pageStatus=await (job.pipeline??=new PageScripts(this,baseUrl,manifest)).run();}
       catch(e){this.pageStatus={mode:'bounded',status:'degraded',errors:[{reason:'pipeline',detail:e.message}]};}
       if(this.pageStatus.status==='pending'){this.pageStatus.rendering='partial';return;}
       if(this.pageStatus.status==='degraded'){
-        // A preflight refusal has not executed page code or changed its DOM.
-        // Keep it intact instead of reinitializing Wasm and repeating automation.
-        if(this.pageStatus.executed!==0){
+        // Only an exhausted execution scope needs a fresh VM to drop runaway jobs.
+        if(job.pipeline?.executionAborted){
           this.engine.dispose();this.engine=null;this.ensure();this.pushLoc();
-          if(viewport)this.dispatch({kind:'viewport',...viewport});this.dispatch({kind:'load_dom',html,baseUrl});early();
+          if(viewport)this.dispatch({kind:'viewport',...viewport});this.dispatch({kind:'load_dom',html,baseUrl});early();job.pipeline.domReady=false;
         }
-        this.dispatch({kind:'domready'});this.pump();
+        if(!job.pipeline?.domReady){this.dispatch({kind:'domready'});this.pump();}
       }
     }else{
       this.pageStatus={mode:'fast',status:'static',executed:0,requests:0,errors:[]};
       this.dispatch({kind:'domready'});this.pump();
     }
-    if(this.pageStatus.status==='executed')this.engine.callGlobal('eval',`for(const n of document.querySelectorAll('noscript'))n.remove()`);
-    this.pageStatus.rendering=manifest.hasFallback && this.pageStatus.status!=='executed'?'fallback':this.pageStatus.status==='executed'?'scripted':'static';
+    if(enabled)this.engine.callGlobal('eval',`for(const n of document.querySelectorAll('noscript'))n.remove()`);
+    this.pageStatus.rendering=enabled?(this.pageStatus.status==='executed'?'scripted':this.pageStatus.executed?'partial':'uninitialized'):(manifest.hasFallback?'fallback':'static');
     job.pending=false;job.stage='complete';this.loadBatchRemaining=null;
     this.pushLog('[page-status] '+JSON.stringify(this.pageStatus));
     for(const c of this.cdpConns)c.onLoadingComplete?.();
@@ -752,7 +735,6 @@ html { zoom: 1.6 !important; }
 
   /** 截图主流程 */
   async shot({ url, w, h, js, translate, fit }) {
-    const lim = siteLimitsFor(url);
     const {html,finalUrl}=await this.fetchDocument(url);
     let finalHtml = html;
     let usedEngineDom = false;
@@ -789,8 +771,7 @@ html { zoom: 1.6 !important; }
         if (t) finalHtml = t;
       } catch (e) { this.pushLog('[translate-error] ' + String((e && e.message) || e)); }
     }
-    const png = await this.paint(finalHtml, finalUrl, w, h, fit === 'tweet',
-      { maxResources: lim ? lim.maxResources : undefined });
+    const png = await this.paint(finalHtml, finalUrl, w, h, fit === 'tweet');
     if(!js)this.pageStatus={mode:'fast',status:'static',rendering:/<noscript[^>]*data-path=/i.test(html)?'fallback':'static',executed:0,requests:0,errors:[]};
     this.pageStatus.resources=this.renderResourcesIncomplete?'limited':this.renderResourceFailures?'partial':'loaded';
     return { png, finalUrl, bytes: html.length, jsInfo:this.pageStatus };
@@ -939,6 +920,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
       if (request.method === 'GET' && path === '/state') {
         return Response.json({
           url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine, page:this.pageStatus||null,
+          durableObjectId:this.ctx.id?.toString()||null,
           proxy:publicProxy(this.proxy),loading:this.loadingState(),
           modCache: { entries: this.modCache.size, bytes: this.modCacheBytes, hits: this.modCacheHits, fetches: this.modCacheFetches },
         });

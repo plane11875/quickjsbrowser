@@ -85,8 +85,8 @@ fragments are simplified. Observers, iframe contexts, forms, keyboard automation
 full cookie/storage policies and async/defer semantics remain incomplete. Large
 Discourse applications are not claimed to work.
 
-The script policy now permits 512 KiB per source, 2 MiB total, 32 requests, a 5 second
-network window, 1,000 QuickJS interrupt callbacks, 256 tasks and 32 settling rounds.
+The script policy now permits 32 MiB of total source memory, 256 requests, a 30 second
+network window, 30,000 QuickJS interrupt callbacks, 256 tasks and 32 settling rounds.
 One-shot timers up to 1 second can settle during startup. Longer timers/intervals
-still decline bounded startup. Document network timeout is 10 seconds. These are
+are still reported as unsupported. Document network timeout is 10 seconds. These are
 project policies, separate from the platform CPU limit.
