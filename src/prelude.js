@@ -484,6 +484,15 @@ export const PRELUDE = String.raw`
     }),
   };
 
+  globalThis.__get_document_cookie=()=>docCookie;
+  globalThis.__set_document_cookie=(value)=>{docCookie=String(value);enqueue('cookie_set',{value:docCookie});};
+  const missingCapabilities=new Set();
+  globalThis.__note_missing_capability=(name)=>{
+    if(globalThis.__page_active && !missingCapabilities.has(name)){
+      missingCapabilities.add(name);enqueue('page_error',{name:'UnsupportedCapability',message:name});
+    }
+  };
+
   // ---- Function.prototype.toString 的 native 伪装在文件末尾统一做 ----
   // （必须等所有全局桩函数都定义完，否则 getComputedStyle / matchMedia 这些
   //   后面才定义的会漏登记，toString 直接暴露 JS 源码）
@@ -580,11 +589,11 @@ export const PRELUDE = String.raw`
   // feature-detect）。空实现即可让页面跑完，代价是这些回调不触发。
   globalThis.IntersectionObserver = class IntersectionObserver {
     constructor(cb) { this.cb = cb; }
-    observe() {} unobserve() {} disconnect() {} takeRecords() { return []; }
+    observe() { globalThis.__note_missing_capability('IntersectionObserver'); } unobserve() {} disconnect() {} takeRecords() { return []; }
   };
   globalThis.ResizeObserver = class ResizeObserver {
     constructor(cb) { this.cb = cb; }
-    observe() {} unobserve() {} disconnect() {}
+    observe() { globalThis.__note_missing_capability('ResizeObserver'); } unobserve() {} disconnect() {}
   };
   globalThis.PerformanceObserver = class PerformanceObserver {
     constructor(cb) { this.cb = cb; }
@@ -970,6 +979,7 @@ export const PRELUDE = String.raw`
   // getComputedStyle：返回带 getPropertyValue 的普通对象。linkedom 不实现布局，
   // 真值给不了；但调用方大多只读几个属性做分支判断，缺函数比缺真值致命得多。
   globalThis.getComputedStyle = (el, pseudo) => {
+    if(globalThis.__note_missing_capability)globalThis.__note_missing_capability('layout.computedStyle');
     const inline = (el && el.style) || {};
     const base = {
       getPropertyValue: (name) => {
@@ -1072,7 +1082,7 @@ export const PRELUDE = String.raw`
         const t = timers.get(m.id);
         if (!t) break;
         if (!t.interval) timers.delete(m.id);
-        try { t.fn(); } catch (e) { console.error(e && e.stack || String(e)); }
+        try { t.fn(); } catch (e) { if(globalThis.__report_page_error)globalThis.__report_page_error(e,locUrl);else console.error(String(e)); }
         if (t.interval) enqueue('timer', { id: m.id, delay: t.delay, interval: true });
         break;
       }
@@ -1109,7 +1119,7 @@ export const PRELUDE = String.raw`
       }
       case 'cookie': { docCookie = String(m.value || ''); break; }
       case 'domready': {
-        if (globalThis.__dom_ready) { try { globalThis.__dom_ready(); } catch (e) {} }
+        if (globalThis.__dom_ready) { try { if(globalThis.__dom_ready())break; } catch (e) { if(globalThis.__report_page_error)globalThis.__report_page_error(e,locUrl); } }
         const ev = { type: 'DOMContentLoaded' };
         for (const fn of [...(listeners.get('doc\u0000DOMContentLoaded') || [])]) { try { fn(ev); } catch (e) { console.error(String(e)); } }
         const ld = { type: 'load' };

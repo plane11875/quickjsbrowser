@@ -133,6 +133,18 @@ export class QjsEngine {
     return this.exports.qjs_add_module_source(all.length) === 1;
   }
 
+  addModuleResolution(base, name, resolved) {
+    const b=TE.encode(base),n=TE.encode(name),u=TE.encode(resolved);
+    const bytes=new Uint8Array(8+b.length+n.length+u.length);
+    const dv=new DataView(bytes.buffer);dv.setUint32(0,b.length,true);dv.setUint32(4,n.length,true);
+    bytes.set(b,8);bytes.set(n,8+b.length);bytes.set(u,8+b.length+n.length);
+    this.#writeBytes(bytes);return this.exports.qjs_add_module_resolution(bytes.length)===1;
+  }
+
+  beginScope(steps, perSource, totalSource) { this.exports.qjs_scope_begin(steps,perSource,totalSource); }
+  endScope() { this.exports.qjs_scope_end(); }
+  scopeExhausted() { return !!this.exports.qjs_scope_exhausted(); }
+
   /** 调 VM 全局函数（args 为原始字符串直通；对象载荷 VM 侧自行 JSON.parse） */
   callGlobal(name, args = '') {
     const ob = TE.encode(name);

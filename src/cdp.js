@@ -42,6 +42,7 @@ export class CdpConnection {
     this.lifecycleEnabled = false;
     this.metrics = { width: 1280, height: 900 };
     this.navSeq = 0;
+    this.scriptExecutionDisabled = null;
     this.ctxSeq = 0;
     this.contextId = 0;
     this.earlyScriptSeq = 0;
@@ -285,15 +286,8 @@ export class CdpConnection {
         // 也必须走 smartFetch：CDP 这条路原先漏了反代兜底，于是 Page.navigate 到
         // linux.do 拿到 403 挑战页 → 只返回 errorText 不抛错 → captureScreenshot
         // 截出一张空白图（实测 6.6KB），比报错还难查。
-        const r = await S.smartFetch(url, {
-          redirect: 'follow',
-          headers: requestHeaders({ type: 'document', url }),
-        });
-        if (!r.ok) {
-          return { errorText: 'net::ERR_HTTP_RESPONSE_CODE_FAILURE', frameId: FRAME_ID };
-        }
-        finalUrl = r.url || url;
-        html = (await r.text()).slice(0, 4_000_000);
+        const document=await S.fetchDocument(url);
+        finalUrl=document.finalUrl;html=document.html;
       }
     } catch (e) {
       return { errorText: 'net::ERR_FAILED', frameId: FRAME_ID };
@@ -303,7 +297,7 @@ export class CdpConnection {
     // Emulation.setDeviceMetricsOverride，故这里用当次 metrics）。
     S.dispatch({ kind: 'viewport', w: this.metrics.width || 1280, h: this.metrics.height || 900 });
     try {
-      await S.runPageScripts(html, finalUrl, { serialize: false });
+      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1280,h:this.metrics.height||900} });
     } catch (e) {
       S.pushLog('[cdp-nav-error] ' + String((e && e.message) || e));
     }
@@ -467,6 +461,9 @@ export class CdpConnection {
     'Page.setLifecycleEventsEnabled': function (params) {
       this.lifecycleEnabled = !!params.enabled;
       return {};
+    },
+    'Emulation.setScriptExecutionDisabled': function (params) {
+      this.scriptExecutionDisabled=!!params.value;return {};
     },
     'Page.navigate': function (params) { return this.#navigate(params); },
     'Page.addScriptToEvaluateOnNewDocument': function (params) {

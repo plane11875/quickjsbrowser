@@ -30,6 +30,7 @@
 
 typedef struct { char *url; char *src; int kind; } SrcEntry;
 typedef struct { char *url; JSModuleDef *m; } ModEntry;
+typedef struct { char *base; char *name; char *url; } Resolution;
 
 static struct {
     JSRuntime *rt;
@@ -38,6 +39,13 @@ static struct {
     int nsrc;
     ModEntry modcache[MAX_MODCACHE];
     int nmod;
+    struct { JSValue promise, reason; } rejections[64];
+    int nrejections;
+    Resolution resolutions[4096];
+    int nres;
+    int scope_locked;
+    uint32_t scope_max_source, scope_total_source, scope_compiled;
+    unsigned long saved_interrupt_budget;
     char *outbox[MAX_OUTBOX];
     int nout;
     unsigned long outbox_dropped;   /* 溢出丢弃计数，随 outbox 一起上报 */
@@ -111,65 +119,39 @@ static JSValue js_enqueue(JSContext *ctx, JSValueConst this_val,
 /* ---------------- 异常序列化 ---------------- */
 
 /* 取已挂异常 → outbox {kind:"exception",payload:{message,stack}}，返回文本副本供调用方 */
+static JSValue error_field(JSContext *ctx, JSValueConst exc,const char *key,const char *fallback) {
+    JSValue v=JS_IsObject(exc)?JS_GetPropertyStr(ctx,exc,key):JS_UNDEFINED;
+    if(JS_IsException(v)){JS_FreeValue(ctx,JS_GetException(ctx));v=JS_UNDEFINED;}
+    const char *text=NULL;
+    if(!JS_IsUndefined(v)&&!JS_IsNull(v))text=JS_ToCString(ctx,v);
+    if(!text && !strcmp(key,"message"))text=JS_ToCString(ctx,exc);
+    JSValue out=JS_NewStringLen(ctx,text?text:fallback,text?strnlen(text,2048):strlen(fallback));
+    if(text)JS_FreeCString(ctx,text);JS_FreeValue(ctx,v);return out;
+}
+static void emit_error_value(JSContext *ctx,JSValueConst exc,const char *kind) {
+    JSValue o=JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx,o,"name",error_field(ctx,exc,"name","Error"));
+    JS_SetPropertyStr(ctx,o,"message",error_field(ctx,exc,"message","unknown"));
+    JS_SetPropertyStr(ctx,o,"stack",error_field(ctx,exc,"stack",""));
+    JSValue json=JS_JSONStringify(ctx,o,JS_UNDEFINED,JS_UNDEFINED);JS_FreeValue(ctx,o);
+    const char *text=JS_IsException(json)?NULL:JS_ToCString(ctx,json);
+    if(text){outbox_push(kind,text);JS_FreeCString(ctx,text);}
+    if(JS_IsException(json))JS_FreeValue(ctx,JS_GetException(ctx));
+    JS_FreeValue(ctx,json);
+}
 static void emit_current_exception(JSContext *ctx) {
-    JSValue exc = JS_GetException(ctx);
-    const char *msg = NULL, *stack = NULL;
-    if (!JS_IsNull(exc) && !JS_IsUndefined(exc) && JS_IsObject(exc)) {
-        JSValue m = JS_GetPropertyStr(ctx, exc, "message");
-        JSValue st = JS_GetPropertyStr(ctx, exc, "stack");
-        if (!JS_IsUndefined(m)) msg = JS_ToCString(ctx, m);
-        if (!JS_IsUndefined(st)) stack = JS_ToCString(ctx, st);
-        /* message/stack 序列化进 JSON 字符串字面量：内容含引号/换行时须转义。
-           payload 用 JS_JSONStringify 由调用方包一层——这里先把两段文本
-           经 JSON.stringify 转成安全 JSON 字符串。 */
-        char *jmsg = NULL, *jstack = NULL;
-        if (msg) {
-            JSValue mv = JS_JSONStringify(ctx, JS_NewString(ctx, msg), JS_UNDEFINED, JS_UNDEFINED);
-            if (!JS_IsException(mv)) {
-                size_t ml; jmsg = (char *)JS_ToCStringLen(ctx, &ml, mv);
-            }
-        }
-        if (stack) {
-            JSValue sv = JS_JSONStringify(ctx, JS_NewString(ctx, stack), JS_UNDEFINED, JS_UNDEFINED);
-            if (!JS_IsException(sv)) {
-                size_t sl; jstack = (char *)JS_ToCStringLen(ctx, &sl, sv);
-            }
-        }
-        size_t cap = 96 + (jmsg ? strlen(jmsg) : 4) + (jstack ? strlen(jstack) : 4);
-        char *buf = malloc(cap);
-        if (buf) {
-            snprintf(buf, cap, "{\"message\":%s,\"stack\":%s}",
-                     jmsg ? jmsg : "null", jstack ? jstack : "null");
-            outbox_push("exception", buf);
-            free(buf);
-        }
-        if (jmsg) JS_FreeCString(ctx, jmsg);
-        if (jstack) JS_FreeCString(ctx, jstack);
-        if (msg) JS_FreeCString(ctx, msg);
-        if (stack) JS_FreeCString(ctx, stack);
-        JS_FreeValue(ctx, m);
-        JS_FreeValue(ctx, st);
-    } else {
-        const char *s = JS_ToCString(ctx, exc);
-        size_t cap = 96 + (s ? strlen(s) * 6 : 8);
-        char *buf = malloc(cap);
-        if (buf) {
-            if (s) {
-                /* 非 Error 对象：整体 stringify */
-                JSValue sv = JS_JSONStringify(ctx, exc, JS_UNDEFINED, JS_UNDEFINED);
-                const char *j = JS_IsException(sv) ? NULL : JS_ToCString(ctx, sv);
-                snprintf(buf, cap, "{\"message\":%s,\"stack\":null}",
-                         j ? j : "null");
-                if (j) JS_FreeCString(ctx, j);
-                if (!JS_IsException(sv)) JS_FreeValue(ctx, sv);
-            } else {
-                snprintf(buf, cap, "{\"message\":\"unknown\",\"stack\":null}");
-            }
-            outbox_push("exception", buf);
-            free(buf);
-        }
+    JSValue exc=JS_GetException(ctx);emit_error_value(ctx,exc,"exception");JS_FreeValue(ctx,exc);
+}
+static void rejection_tracker(JSContext *ctx,JSValueConst promise,JSValueConst reason,JS_BOOL handled,void *opaque) {
+    (void)opaque;
+    for(int i=0;i<S.nrejections;i++)if(JS_VALUE_GET_PTR(S.rejections[i].promise)==JS_VALUE_GET_PTR(promise)){
+        if(handled){JS_FreeValue(ctx,S.rejections[i].promise);JS_FreeValue(ctx,S.rejections[i].reason);S.rejections[i]=S.rejections[--S.nrejections];}
+        return;
     }
-    JS_FreeValue(ctx, exc);
+    if(!handled && S.nrejections<64){
+        S.rejections[S.nrejections].promise=JS_DupValue(ctx,promise);
+        S.rejections[S.nrejections++].reason=JS_DupValue(ctx,reason);
+    }
 }
 
 /* ---------------- module loader ---------------- */
@@ -245,6 +227,11 @@ static JSModuleDef *module_loader2(JSContext *ctx, const char *module_name,
     }
     if (want_json) kind = SRC_KIND_JSON;
 
+    size_t source_len=strlen(src);
+    if(S.scope_locked && (source_len>S.scope_max_source || source_len>S.scope_total_source-S.scope_compiled)) {
+        JS_ThrowRangeError(ctx,"page module source budget exceeded: %s",module_name);return NULL;
+    }
+    if(S.scope_locked)S.scope_compiled+=(uint32_t)source_len;
     JSValue func_val;
     if (kind == SRC_KIND_JSON) {
         /* `export default ` + 原文；JSON 是合法的 JS 表达式字面量 */
@@ -283,6 +270,10 @@ static JSModuleDef *module_loader2(JSContext *ctx, const char *module_name,
    返回 js_malloc 内存（quickjs 侧 js_free）。 */
 static char *normalize_module(JSContext *ctx, const char *base, const char *name, void *opaque) {
     (void)opaque;
+    for (int i=0;i<S.nres;i++) {
+        Resolution *r=&S.resolutions[i];
+        if (!strcmp(r->base,base) && !strcmp(r->name,name)) return js_strdup(ctx,r->url);
+    }
     size_t nl = strlen(name);
     /* 绝对 URL */
     if (strstr(name, "://")) {
@@ -382,6 +373,7 @@ uint32_t qjs_new(void) {
         JS_FreeContext(S.ctx); JS_FreeRuntime(S.rt);
         S.ctx = NULL; S.rt = NULL; return 0;
     }
+    JS_SetHostPromiseRejectionTracker(S.rt,rejection_tracker,NULL);
     /* JS→宿主唯一出口 */
     JSValue global = JS_GetGlobalObject(S.ctx);
     JS_SetPropertyStr(S.ctx, global, "__hostEnqueue",
@@ -401,7 +393,7 @@ void qjs_set_limits(uint32_t mem, uint32_t stack, uint32_t budget) {
 }
 
 __attribute__((export_name("qjs_interrupt_reset")))
-void qjs_interrupt_reset(void) { S.interrupt_count = 0; }
+void qjs_interrupt_reset(void) { if(!S.scope_locked) S.interrupt_count = 0; }
 
 static int interrupt_handler(JSRuntime *rt, void *opaque) {
     (void)rt; (void)opaque;
@@ -413,6 +405,39 @@ void qjs_set_interrupt(uint32_t enabled, uint32_t budget) {
     if (!S.rt) return;
     S.interrupt_budget = budget;
     JS_SetInterruptHandler(S.rt, enabled ? interrupt_handler : NULL, NULL);
+}
+
+/* A page shares one instruction budget across classic scripts and microtasks.
+   Source caps are checked before module compilation, which a JS timer cannot preempt. */
+__attribute__((export_name("qjs_scope_begin")))
+void qjs_scope_begin(uint32_t budget,uint32_t per_source,uint32_t total_source) {
+    S.saved_interrupt_budget=S.interrupt_budget;S.interrupt_budget=budget;
+    S.interrupt_count=0;S.scope_locked=1;S.scope_max_source=per_source;
+    S.scope_total_source=total_source;S.scope_compiled=0;
+}
+__attribute__((export_name("qjs_scope_end")))
+void qjs_scope_end(void) {
+    if(S.scope_locked)S.interrupt_budget=S.saved_interrupt_budget;
+    S.scope_locked=0;S.interrupt_count=0;
+}
+__attribute__((export_name("qjs_scope_exhausted")))
+uint32_t qjs_scope_exhausted(void) {return S.scope_locked && S.interrupt_count>S.interrupt_budget;}
+
+/* [u32 base length][u32 name length][base][name][absolute resolution].
+   The host WHATWG/import-map resolver registers exact aliases, avoiding two
+   subtly different module-resolution algorithms across the Wasm boundary. */
+__attribute__((export_name("qjs_add_module_resolution")))
+uint32_t qjs_add_module_resolution(uint32_t len) {
+    if(len<8||!S.input||S.nres>=4096)return 0;
+    uint32_t bl,nl;memcpy(&bl,S.input,4);memcpy(&nl,S.input+4,4);
+    if((size_t)bl+nl+8>=len)return 0;
+    char *base=strndup((char*)S.input+8,bl),*name=strndup((char*)S.input+8+bl,nl);
+    char *url=strndup((char*)S.input+8+bl+nl,len-8-bl-nl);
+    if(!base||!name||!url){free(base);free(name);free(url);return 0;}
+    for(int i=0;i<S.nres;i++)if(!strcmp(S.resolutions[i].base,base)&&!strcmp(S.resolutions[i].name,name)){
+        free(S.resolutions[i].url);S.resolutions[i].url=url;free(base);free(name);return 1;
+    }
+    S.resolutions[S.nres++]=(Resolution){base,name,url};return 1;
 }
 
 /* 中断计数器需要 rt 存在后生效：qjs_new 里先 NULL，qjs_enable_interrupt 后开 */
@@ -457,7 +482,7 @@ uint32_t qjs_eval(uint32_t len, uint32_t is_module,
     }
     const char *code = (const char *)S.input + name_len;
     size_t code_len = (size_t)len - name_len;
-    S.interrupt_count = 0;
+    if(!S.scope_locked) S.interrupt_count = 0;
     uint32_t flags = is_module ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL;
     JSValue v = JS_Eval(S.ctx, code, code_len, name, flags);
     if (JS_IsException(v)) {
@@ -531,7 +556,7 @@ uint64_t qjs_call_global(uint32_t len) {
     }
     /* args 以原始字符串直通（不再 C 侧 ParseJSON）：对象载荷由 VM 内
        __dispatch 的 JSON.parse 负责，'eval' 这类字符串参数天然正确。 */
-    S.interrupt_count = 0;
+    if(!S.scope_locked) S.interrupt_count = 0;
     JSValue arg = alen > 0 ? JS_NewStringLen(S.ctx, args_json, alen) : JS_UNDEFINED;
     JSValue ret = JS_Call(S.ctx, fn, JS_UNDEFINED, 1, &arg);
     JS_FreeValue(S.ctx, arg);
@@ -580,6 +605,13 @@ uint32_t qjs_job_pending(void) {
    静默截断日志会让人误判页面行为，必须让宿主看得见。 */
 __attribute__((export_name("qjs_take_tasks")))
 uint64_t qjs_take_tasks(void) {
+    /* Observe after a microtask checkpoint, allowing an immediate catch handler
+       to remove a rejection before it is reported as unhandled. */
+    for(int i=0;i<S.nrejections;i++){
+        emit_error_value(S.ctx,S.rejections[i].reason,"unhandled_rejection");
+        JS_FreeValue(S.ctx,S.rejections[i].promise);JS_FreeValue(S.ctx,S.rejections[i].reason);
+    }
+    S.nrejections=0;
     unsigned long dropped = S.outbox_dropped;
     S.outbox_dropped = 0;
     if (S.nout == 0) {
@@ -626,12 +658,17 @@ void qjs_run_gc(void) {
 
 __attribute__((export_name("qjs_free")))
 void qjs_free(void) {
+    if(S.rt)JS_SetHostPromiseRejectionTracker(S.rt,NULL,NULL);
+    for(int i=0;i<S.nrejections;i++){JS_FreeValue(S.ctx,S.rejections[i].promise);JS_FreeValue(S.ctx,S.rejections[i].reason);}
+    S.nrejections=0;
     if (S.ctx) { JS_FreeContext(S.ctx); S.ctx = NULL; }
     if (S.rt) { JS_FreeRuntime(S.rt); S.rt = NULL; }
     for (int i = 0; i < S.nsrc; i++) { free(S.sources[i].url); free(S.sources[i].src); }
     S.nsrc = 0;
     for (int i = 0; i < S.nmod; i++) free(S.modcache[i].url);
     S.nmod = 0;
+    for(int i=0;i<S.nres;i++){free(S.resolutions[i].base);free(S.resolutions[i].name);free(S.resolutions[i].url);}
+    S.nres=0;
     for (int i = 0; i < S.nout; i++) free(S.outbox[i]);
     S.nout = 0;
     S.outbox_dropped = 0;

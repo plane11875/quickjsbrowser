@@ -6,6 +6,8 @@
 // DO 重启即丢会话（浏览器组件阶段再接 storage 持久化）。
 
 import { QjsEngine } from './engine.js';
+import { PageScripts } from './page-scripts.js';
+import { moduleSpecifiers } from './module-resolver.js';
 import { CdpConnection } from './cdp.js';
 import { requestHeaders, guessType } from './fingerprint.js';
 import { relayFetch } from './net/relay.js';
@@ -25,13 +27,6 @@ import fontSc from './vendor/fonts/sc-regular.ttf';
 import fontJp from './vendor/fonts/jp-regular.ttf';
 
 const GENERIC_LEAD = [['monospace', ['mono', 'sc', 'jp']], ['ui-monospace', ['mono', 'sc', 'jp']]];
-
-// 静态 import/export 说明符扫描（含动态 import("...") 字面量；与 pagescript 同思路）
-const SPEC_RES = [
-  /\bfrom\s*("([^"\n]*)"|'([^'\n]*)')/g,
-  /\bimport\s*\(\s*("([^"\n]*)"|'([^'\n]*)')/g,
-  /\bimport\s*("([^"\n]*)"|'([^'\n]*)')/g,
-];
 
 // 说明符是否像模像样。压缩过的 JS 里 `from`/`import(` 会出现在字符串和三元表达式内部，
 // 纯正则会扫出 `],[30,0,[` 这类噪声，再被 resolveSpec 拼成 jsdelivr 地址真发出去。
@@ -78,11 +73,6 @@ function stripScriptBodies(html) {
   return html.replace(/(<script\b[^>]*>)[\s\S]*?(<\/script>)/gi, '$1$2');
 }
 
-// 单个内联脚本超过这个体量就不执行了。这种尺寸的基本是应用包（Discourse / Ember 之类），
-// 在我们的 VM 里跑不起来——它们要真 DOM、WebSocket、localStorage，结果只有两种：
-// 抛错，或者烧掉十几秒 CPU 后抛错。都不如直接跳过。实测 linux.do 那 266KB 内联 JS 就是这么浪费的。
-const INLINE_SCRIPT_MAX = 100_000;
-
 // ---- 资源过滤：按「对画面有没有用」筛，而不是按数量砍 ----
 // blitz 不执行 JS，所以为渲染去抓 .js 是 100% 的无用功——脚本永远改变不了这张图。
 // 资源发现可能包含 script preload；它们不参与静态绘图。
@@ -113,8 +103,8 @@ export function worthFetchingForRender(u) {
 // （不填 = 不限，交给 worthFetchingForRender 按用途筛）。
 //
 // linux.do 是主人指定的样本，公认的资源黑洞：开页就发几十个 JS 包。关掉 JS 执行是因为
-// 它那 266KB 内联 + 6.3MB 模块的应用包在我们的 VM 里根本跑不起来（要真 DOM / WebSocket /
-// localStorage），跑它只有两种结局——抛错，或者烧掉十几秒 CPU 后抛错。
+// 它的多 MB 应用模块超出受控执行预算。默认静态；显式开启 JS 时按统一预算尝试，
+// 超限会给出原因并回退，不再进入昂贵的编译/模块求值。
 const SITE_LIMITS = [
   { host: 'linux.do', js: false },
 ];
@@ -191,9 +181,11 @@ export class QjsSession {
         this.pushLog(`[${t.payload.level}] ${t.payload.text}`);
         this.cdpEmitTask(t);
         break;
+      case 'page_error':
+      case 'unhandled_rejection':
       case 'exception':
-        this.pushLog(`[exception] ${t.payload.message || 'unknown'}`);
-        this.cdpEmitTask(t);
+        this.pushLog('[exception] '+JSON.stringify(t.payload));
+        this.cdpEmitTask({...t,kind:'exception'});
         break;
       case 'timer': {
         const delay = Math.min(Math.max(t.payload.delay || 0, 0), 60000);
@@ -308,15 +300,8 @@ export class QjsSession {
   }
 
   scanSpecs(src) {
-    const out = [];
-    for (const re of SPEC_RES) {
-      re.lastIndex = 0;
-      for (const m of src.matchAll(re)) {
-        const spec = m[2] ?? m[3];
-        if (spec && plausibleSpec(spec)) out.push(spec);
-      }
-    }
-    return out;
+    try { return moduleSpecifiers(src).filter(plausibleSpec); }
+    catch (e) { this.pushLog('[module-parse] '+e.message); return []; }
   }
 
   async fetchModuleSource(url) {
@@ -384,7 +369,9 @@ export class QjsSession {
       for (const [url, src] of queue) {
         for (const spec of this.scanSpecs(src)) {
           const abs = this.resolveSpec(url, spec);
-          if (!abs || seen.has(abs)) continue;
+          if (!abs) continue;
+          this.engine.addModuleResolution(url, spec, abs);
+          if (seen.has(abs)) continue;
           seen.add(abs);
           want.push(abs);
         }
@@ -524,8 +511,8 @@ html { zoom: 1.6 !important; }
 
   /** 渲染 + missed_resources 闭环回收（CSS/图片/@import 多轮）；trim = 裁掉底部整行空白 */
   async paint(rawHtml, baseUrl, w, h, trim = false, opts = {}) {
-    // 分阶段打点。DO 撞 CPU 上限时拿不到 profile，只能靠墙钟分段定位——
-    // linux.do 这份文档实测整条 paint 就吃掉 30 秒 CPU，不插桩就是盲猜（已经猜错两轮）。
+    // Workers clocks advance at I/O boundaries. These markers describe resource
+    // progress; synchronous rendering CPU must be checked in platform telemetry.
     const T = Date.now();
     const mark = (label) => { this.pushLog(`[paint-ms] ${label} +${Date.now() - T}ms (共 ${Date.now() - T}ms)`); };
     await this.ensureBlitz();
@@ -543,6 +530,10 @@ html { zoom: 1.6 !important; }
     const budget = opts.maxResources == null ? Infinity : opts.maxResources;
     let spent = 0;
     const tried = new Set();
+    const resourceController=new AbortController();
+    const resourceTimer=setTimeout(()=>resourceController.abort(),2000);
+    this.renderResourcesIncomplete=false;this.renderResourceFailures=0;
+    try {
     for (let pass = 0; pass < 3 && spent < budget; pass++) {
       let missed;
       try { missed = missed_resources(); } catch (e) { break; }
@@ -559,14 +550,17 @@ html { zoom: 1.6 !important; }
       this.pushLog(`[resources] pass ${pass + 1}: ${todo.length} 新增待抓（共 ${missed.length} missed）`);
       let added = 0;
       await this.mapLimit(todo, RESOURCE_CONCURRENCY, async (u) => {
+        if(resourceController.signal.aborted)return;
         try {
           // 资源补抓：按扩展名判类型（css/image/font/js 的头各不相同），Referer 用文档 URL
           const rr = await this.smartFetch(u, {
             redirect: 'follow',
             headers: requestHeaders({ type: guessType(u), url: u, referer: baseUrl, mode: 'no-cors' }),
+            signal:resourceController.signal,
           }, { allowRelay: false });
           if (rr.ok) { add_resource(u, new Uint8Array(await rr.arrayBuffer())); added++; }
-        } catch (e) { /* 单资源失败不致命 */ }
+          else this.renderResourceFailures++;
+        } catch (e) { this.renderResourceFailures++; }
       });
       // 全军覆没时重渲染毫无意义（画面不会变化），直接进入收尾，省一次全量渲染。
       mark(`pass${pass + 1} 抓 ${todo.length} 个资源`);
@@ -574,6 +568,8 @@ html { zoom: 1.6 !important; }
       rgba = render_png_rgba_no_js(html, baseUrl, w, h);
       mark(`pass${pass + 1} 重渲染 (抓了 ${todo.length} 个)`);
     }
+    } finally {clearTimeout(resourceTimer);}
+    if(resourceController.signal.aborted){this.renderResourcesIncomplete=true;this.pushLog('[resource-budget] 2000ms network window exhausted');}
     let buf = new Uint8Array(rgba);
     if (trim) {
       // 内容检测裁剪：跳过透明像素（空白区是透明黑），剩余亮度<210 算内容；内容外保留 40px 边距
@@ -614,117 +610,45 @@ html { zoom: 1.6 !important; }
     }
     const png = await encodePNG(buf, w, h);
     mark(`encodePNG ${w}x${h}`);
+    if(this.pageStatus)this.pageStatus.resources=this.renderResourcesIncomplete?'limited':this.renderResourceFailures?'partial':'loaded';
     return png;
   }
 
   /** 页面脚本管线：抽脚本 → 预取 → DOM 建立 → 经典脚本 → 模块 → settle → 序列化 */
-  async runPageScripts(html, baseUrl, { serialize = true } = {}) {
-    // Both HTTP screenshots and CDP navigation must use the same site policy.
-    // Keep the DOM and automation scripts available even when page JS is disabled.
-    const lim = siteLimitsFor(baseUrl);
-    const executeScripts = lim?.js !== false;
-    if (!executeScripts) this.pushLog(`[site-limit] ${lim.host}: 跳过页面脚本，保留 DOM 和自动化脚本`);
-    this.ensure();
-    this.url = baseUrl;
-    this.pushLoc();
-    // 换文档：旧 DOM 整批变垃圾，立刻回收。不回收的话堆随导航次数单调涨，
-    // parse 耗时随之劣化（实测 193KB 页连续 12 次：364ms → 469ms）。
-    this.engine.runGC();
-    const scripts = [];
-    const stripped = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (m, attrs, body) => {
-      if (!executeScripts) return m;
-      const type = (/\btype\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs)?.slice(2).find(Boolean) || '').trim().toLowerCase();
-      const isJs = !type || ['text/javascript', 'application/javascript', 'module'].includes(type);
-      if (!isJs) return m;
-      const srcM = /\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
-      const src = srcM ? (srcM[2] ?? srcM[3] ?? srcM[4]) : null;
-      const keep = attrs.replace(/\btype\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '');
-      if (src) scripts.push({ src, module: type === 'module', order: scripts.length });
-      else if (body.trim()) {
-        // 大块内联 JS = 应用包，在我们的 VM 里跑不起来；标记跳过执行，但标签照留（DOM 结构不变）
-        scripts.push({ code: body, module: type === 'module', order: scripts.length, skip: body.length > INLINE_SCRIPT_MAX });
-      }
-      return `<script${keep} type="application/x-already-run">${body}</script>`;
-    });
-    // 外链经典脚本源码预取
-    const external = new Map();
-    const classicUrls = [...new Set(scripts.filter((s) => !s.module && s.src)
-      .map((s) => new URL(s.src, baseUrl).href))];
-    // Fetch concurrently; the execution loop below still preserves document order.
-    await this.mapLimit(classicUrls, PREFETCH_CONCURRENCY, async (abs) => {
-      try {
-        // 外链经典脚本：Chrome 对 classic script 发 no-cors 模式（不发 Origin）
-        const r = await this.smartFetch(abs, {
-          redirect: 'follow',
-          headers: requestHeaders({ type: 'script', url: abs, referer: baseUrl, mode: 'no-cors' }),
-        });
-        if (r.ok) external.set(abs, await r.text());
-        else this.pushLog(`[script-miss] ${abs} (${r.status})`);
-      } catch (e) { this.pushLog(`[script-miss] ${abs}`); }
-    });
-    // 模块图预取 + 注册
-    const moduleEntries = [];
-    for (const s of scripts) {
-      if (!s.module) continue;
-      const entry = s.src ? new URL(s.src, baseUrl).href : `${baseUrl}#inline-${s.order}`;
-      const got = s.src ? await this.fetchModuleSource(entry) : { text: s.code, kind: 0 };
-      if (got && got.text) {
-        // 超阈值的应用包连 import 图都不预取：那一步要对整份源码跑正则扫说明符，
-        // 266KB 扫下来既费 CPU 又会扫出成堆噪声，而我们最后根本不会执行它。
-        if (s.skip) { moduleEntries.push({ entry, src: got.text, inline: !s.src, skip: true }); continue; }
-        this.registerModule(entry, got);
-        await this.prefetchGraph(entry, got.text);
-        moduleEntries.push({ entry, src: got.text, inline: !s.src });
-      } else this.pushLog(`[module-miss] ${entry}`);
-    }
-    // DOM 建立（script 元素保留、type 已标记 already-run）
-    this.dispatch({ kind: 'load_dom', html: stripped, baseUrl });
-    // CDP 新文档早期脚本（Page.addScriptToEvaluateOnNewDocument），先于页面脚本
-    if (this.cdpEarlyScripts) {
-      for (const es of this.cdpEarlyScripts) {
-        if (!es || !es.src) continue;
-        const err = this.engine.callGlobal('__run_classic', es.src);
-        if (err.value) this.pushLog('[early-script-error] ' + err.value);
+  async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport } = {}) {
+    const lim=siteLimitsFor(baseUrl);
+    const enabled=executeScripts ?? lim?.js!==false;
+    // A new document gets a fresh VM: old globals, pending jobs and module
+    // records must not survive navigation or an aborted page application.
+    if(this.engine){this.engine.dispose();this.engine=null;}
+    this.ensure();this.url=baseUrl;this.pushLoc();if(viewport)this.dispatch({kind:'viewport',...viewport});
+    this.dispatch({kind:'load_dom',html,baseUrl});
+    const early=()=>{
+      for(const item of this.cdpEarlyScripts||[]){
+        const r=this.engine.callGlobal('__run_classic',item.src);
+        if(r.value)this.pushLog('[early-script-error] '+r.value);
         this.pump();
       }
-    }
-    // 经典脚本按文档序（间接 eval，全局作用域）
-    for (const s of scripts) {
-      if (s.module) continue;
-      if (s.skip) { this.pushLog(`[script-skip] 内联 ${(s.code.length / 1024).toFixed(0)}KB 应用包，超阈值不执行`); continue; }
-      const code = s.code ?? external.get(new URL(s.src, baseUrl).href);
-      if (code == null) continue;
-      const err = this.engine.callGlobal('__run_classic', code);
-      if (err.value) this.pushLog('[script-error] ' + err.value);
-      this.pump();
-    }
-    // 模块求值
-    for (const me of moduleEntries) {
-      if (me.skip) { this.pushLog(`[script-skip] 内联模块 ${(me.src.length / 1024).toFixed(0)}KB 超阈值不执行`); continue; }
-      const rc = me.inline
-        ? this.engine.eval(me.src, me.entry, true)
-        : this.engine.eval(`import(${JSON.stringify(me.entry)});`, baseUrl, false);
-      if (rc !== 0) this.pushLog(`[module-error] ${me.entry}`);
-      this.pump();
-    }
-    // settle：domready + 定时器若干轮
-    this.dispatch({ kind: 'domready' });
-    for (let round = 0; round < 8; round++) {
-      this.engine.drainJobs();
-      const tasks = this.engine.takeTasks();
-      if (!tasks.length) break;
-      for (const t of tasks) {
-        if (t.kind === 'timer') this.dispatch({ kind: 'timer_fire', id: t.payload.id });
-        else if (t.kind === 'console') { this.pushLog(`[${t.payload.level}] ${t.payload.text}`); this.cdpEmitTask(t); }
-        else if (t.kind === 'exception') { this.pushLog(`[exception] ${t.payload.message}`); this.cdpEmitTask(t); }
+    };
+    early();
+    const manifest=this.engine.callGlobal('__page_manifest').value;
+    if(!manifest)throw new Error('DOM manifest failed');
+    if(enabled){
+      // On failure rebuild the original DOM and trusted automation in a clean VM.
+      try{this.pageStatus=await new PageScripts(this,baseUrl,manifest).run();}
+      catch(e){this.pageStatus={mode:'bounded',status:'degraded',errors:[{reason:'pipeline',detail:e.message}]};}
+      if(this.pageStatus.status==='degraded'){
+        this.engine.dispose();this.engine=null;this.ensure();this.pushLoc();
+        if(viewport)this.dispatch({kind:'viewport',...viewport});this.dispatch({kind:'load_dom',html,baseUrl});early();
+        this.dispatch({kind:'domready'});this.pump();
       }
-      this.engine.drainJobs();
+    }else{
+      this.pageStatus={mode:'fast',status:'static',executed:0,requests:0,errors:[]};
+      this.dispatch({kind:'domready'});this.pump();
     }
-    this.pushLog(`[page-scripts] enabled=${executeScripts} classic=${classicUrls.length} modules=${moduleEntries.length}`);
-    // CDP keeps the live DOM; serializing it here only throws away a full copy.
-    if (!serialize) return;
-    const out = this.engine.callGlobal('__dom_html');
-    return out.ok && out.value ? out.value : html;
+    this.pageStatus.rendering=manifest.hasFallback && this.pageStatus.status!=='executed'?'fallback':this.pageStatus.status==='executed'?'scripted':'static';
+    this.pushLog('[page-status] '+JSON.stringify(this.pageStatus));
+    if(serialize)return this.engine.callGlobal('__dom_html').value||html;
   }
 
   /**
@@ -754,6 +678,7 @@ html { zoom: 1.6 !important; }
         headers: init.headers || {},
         body: typeof init.body === 'string' ? init.body : null,
         redirect: init.redirect === 'manual' ? 'manual' : 'follow',
+        signal:init.signal,
       });
       if (alt.ok) {
         this.pushLog(`[relay] ${r.status} → ${alt.status} ${url}`);
@@ -761,40 +686,42 @@ html { zoom: 1.6 !important; }
       }
       this.pushLog(`[relay] 反代没救回来：${r.status} → ${alt.status} ${url}`);
     } catch (e) {
+      if(init.signal?.aborted)throw e;
       this.pushLog(`[relay-error] ${String((e && e.message) || e)} <- ${url}`);
     }
     return r;
   }
 
+  async fetchDocument(url) {
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(new Error('document network budget exceeded (2500ms)')),2500);
+    try{
+      const r=await this.smartFetch(url,{redirect:'follow',signal:controller.signal,headers:requestHeaders({type:'document',url})});
+      if(!r.ok){r.body?.cancel().catch(()=>{});throw new Error(`fetch failed: HTTP ${r.status}`+(r.headers.get('cf-mitigated')?' (cf-mitigated: challenge)':''));}
+      const reader=r.body?.getReader(),parts=[];let bytes=0;
+      if(reader){
+        try{for(;;){const p=await reader.read();if(p.done)break;bytes+=p.value.length;if(bytes>1024*1024)throw new Error('document exceeds 1 MiB input budget');parts.push(p.value);}}
+        catch(e){reader.cancel().catch(()=>{});throw e;}
+      }
+      const body=new Uint8Array(bytes);let offset=0;for(const p of parts){body.set(p,offset);offset+=p.length;}
+      return {html:new TextDecoder().decode(body),finalUrl:r.url||url};
+    }catch(e){
+      this.pageStatus={status:'failed',stage:'document',reason:controller.signal.aborted?'document-timeout':'document-fetch',detail:e.message,url};
+      this.pushLog('[document-error] '+JSON.stringify(this.pageStatus));throw e;
+    }finally{clearTimeout(timer);}
+  }
+
   /** 截图主流程 */
   async shot({ url, w, h, js, translate, fit }) {
-    // 站点级限制：资源黑洞站点强制关 JS（它的应用包在我们的 VM 里本来也跑不起来）
     const lim = siteLimitsFor(url);
-    if (lim && lim.js === false && js) {
-      this.pushLog(`[site-limit] ${lim.host}: 强制关闭 JS 执行（该站开页就发几十个包）`);
-      js = false;
-    }
-    // 顶层导航：Chrome 的 document 头（无 Referer、Sec-Fetch-Site: none、带 Cache-Control: max-age=0）
-    const r = await this.smartFetch(url, {
-      redirect: 'follow',
-      headers: requestHeaders({ type: 'document', url }),
-    });
-    if (!r.ok) {
-      // 区分「硬拦」和「人机挑战」。CF 的挑战页也是 HTTP 403，但带 cf-mitigated: challenge，
-      // body 是 "Just a moment..."。两者的处置完全不同，报错必须说清是哪一种。
-      const mit = r.headers.get('cf-mitigated');
-      throw new Error(`fetch failed: HTTP ${r.status}`
-        + (mit ? ` (cf-mitigated: ${mit} — 人机挑战页，需真浏览器执行 Turnstile 才能过)` : ''));
-    }
-    const finalUrl = r.url;
-    const html = (await r.text()).slice(0, 4_000_000);
+    const {html,finalUrl}=await this.fetchDocument(url);
     let finalHtml = html;
     let usedEngineDom = false;
     // 页面脚本可能读 screen/innerWidth 做分支，视口必须先于脚本派发（否则读到默认值）。
     this.ensure();
     this.dispatch({ kind: 'viewport', w, h });
     if (js) {
-      try { finalHtml = await this.runPageScripts(html, finalUrl); usedEngineDom = true; }
+      try { finalHtml = await this.runPageScripts(html, finalUrl, {executeScripts:true,viewport:{w,h}}); usedEngineDom = true; }
       catch (e) { this.pushLog('[js-pipeline-error] ' + String((e && e.message) || e)); }
     }
     if (fit === 'tweet' || translate) {
@@ -826,7 +753,9 @@ html { zoom: 1.6 !important; }
     }
     const png = await this.paint(finalHtml, finalUrl, w, h, fit === 'tweet',
       { maxResources: lim ? lim.maxResources : undefined });
-    return { png, finalUrl, bytes: html.length };
+    if(!js)this.pageStatus={mode:'fast',status:'static',rendering:/<noscript[^>]*data-path=/i.test(html)?'fallback':'static',executed:0,requests:0,errors:[]};
+    this.pageStatus.resources=this.renderResourcesIncomplete?'limited':this.renderResourceFailures?'partial':'loaded';
+    return { png, finalUrl, bytes: html.length, jsInfo:this.pageStatus };
   }
 
   /**
@@ -948,7 +877,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
           : null;
         const { png, finalUrl, bytes, jsInfo } = await this.shot({ url: body.url, w: Math.min(body.w || 1280, 1920), h: Math.min(body.h || 900, 4096), js: !!body.js, translate, fit: body.fit });
         const resp = new Response(png, { headers: { 'content-type': 'image/png', 'x-final-url': finalUrl, 'x-html-bytes': String(bytes) } });
-        if (jsInfo) resp.headers.set('x-js-info', JSON.stringify(jsInfo).slice(0, 500));
+        if (jsInfo) { resp.headers.set('x-browser-status',jsInfo.rendering+':'+jsInfo.status); resp.headers.set('x-js-info',JSON.stringify({mode:jsInfo.mode,status:jsInfo.status,reason:jsInfo.errors?.[0]?.reason,requests:jsInfo.requests,executed:jsInfo.executed,resources:jsInfo.resources})); }
         return resp;
       }
       if (request.method === 'POST' && path === '/reset') {
@@ -956,7 +885,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
       }
       if (request.method === 'GET' && path === '/state') {
         return Response.json({
-          url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine,
+          url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine, page:this.pageStatus||null,
           modCache: { entries: this.modCache.size, bytes: this.modCacheBytes, hits: this.modCacheHits, fetches: this.modCacheFetches },
         });
       }

@@ -19,6 +19,7 @@
     "wrangler": "^4.0.0"
   },
   "dependencies": {
+    "es-module-lexer": "3.0.4",
     "esbuild": "^0.28.2",
     "linkedom": "^0.18.13"
   }

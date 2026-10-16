@@ -64,12 +64,16 @@ function dechunk(buf) {
 }
 
 /** 单跳：连反代 → 手搓 TLS(SNI=目标) → HTTP/1.1，收完整个响应 */
-async function once(relay, target, method, headers, body, opts) {
+async function once(relay, target, method, headers, body, opts, signal) {
   const [relayHost, relayPort] = relay.split(':');
-  let stream = null;
+  let stream = null, sock = null, onAbort;
+  const aborted = new Promise((_,reject)=>{
+    onAbort=()=>{try{stream?.destroy();sock?.close();}catch{}reject(signal.reason||new Error('relay aborted'));};
+    if(signal?.aborted)onAbort();else signal?.addEventListener('abort',onAbort,{once:true});
+  });
   try {
-    const sock = connect({ hostname: relayHost, port: parseInt(relayPort, 10) || 443 });
-    await sock.opened;
+    sock = connect({ hostname: relayHost, port: parseInt(relayPort, 10) || 443 });
+    await Promise.race([sock.opened,aborted]);
     stream = makeCFStream(sock);
 
     let headerLines = '';
@@ -100,9 +104,10 @@ async function once(relay, target, method, headers, body, opts) {
     const dec = new TextDecoder();
     let buf = new Uint8Array(0);
     let headerEnd = -1;
+    let contentLength = -1;
     let h2mode = false;
     for (;;) {
-      const { value, done } = await gen.next();
+      const { value, done } = await Promise.race([gen.next(),aborted]);
       if (done) break;
       // 握手在第一次 yield 之前就完成了，所以这里已经能读到协商结果
       if (!h2mode && tlsOpts.negotiatedAlpn === 'h2') h2mode = true;
@@ -116,7 +121,15 @@ async function once(relay, target, method, headers, body, opts) {
         if (h2StreamEnded(buf)) break;
         continue;
       }
-      if (headerEnd < 0) headerEnd = findHeaderEnd(buf);
+      if (headerEnd < 0) {
+        headerEnd = findHeaderEnd(buf);
+        if(headerEnd>=0){
+          const parsed=parseHead(dec.decode(buf.slice(0,headerEnd)));
+          if(!(parsed.headers['transfer-encoding']||'').includes('chunked'))contentLength=parseInt(parsed.headers['content-length']||'',10);
+          if(method==='HEAD'||parsed.status===204||parsed.status===304)break;
+        }
+      }
+      if(headerEnd>=0 && contentLength>=0 && buf.length>=headerEnd+4+contentLength)break;
       if (buf.length > MAX_BODY) break;
     }
 
@@ -135,7 +148,8 @@ async function once(relay, target, method, headers, body, opts) {
     if (Number.isFinite(cl) && cl >= 0 && raw.length > cl) raw = raw.slice(0, cl);
     return { status, headers: rh, body: raw, via: 'http/1.1' };
   } finally {
-    try { if (stream) stream.destroy(); } catch {}
+    signal?.removeEventListener('abort',onAbort);
+    try { if (stream) stream.destroy(); else sock?.close(); } catch {}
   }
 }
 
@@ -144,12 +158,12 @@ async function once(relay, target, method, headers, body, opts) {
  * 调用方可以当成 fetch 的返回值直接用。
  * relay 形如 '1.2.3.4:2096'。
  */
-export async function relayFetch(relay, urlStr, { method = 'GET', headers = {}, body = null, redirect = 'follow', tls = null } = {}) {
+export async function relayFetch(relay, urlStr, { method = 'GET', headers = {}, body = null, redirect = 'follow', tls = null, signal = null } = {}) {
   let target = new URL(urlStr);
   let m = method;
   let b = body;
   for (let hop = 0; ; hop++) {
-    const r = await once(relay, target, m, headers, b, tls);
+    const r = await once(relay, target, m, headers, b, tls, signal);
     const loc = r.headers.location;
     if (redirect === 'follow' && r.status >= 300 && r.status < 400 && loc && hop < MAX_REDIRECTS) {
       target = new URL(loc, target);
