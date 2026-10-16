@@ -25,7 +25,7 @@ function makeEngine() {
     fd_close: () => 0,
     fd_seek: () => 29,
   };
-  const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi });
+  const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi, browser:{layout:()=>-1} });
   mem = inst.exports.memory;
   inst.exports._initialize();
   const E = inst.exports;

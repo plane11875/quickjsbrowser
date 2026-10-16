@@ -116,6 +116,21 @@ static JSValue js_enqueue(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+// A synchronous read-only host call; it may run renderer WASM but never reenters QuickJS.
+__attribute__((import_module("browser"), import_name("layout")))
+extern int browser_layout(const char *input, uint32_t length, char *output, uint32_t capacity);
+static JSValue js_layout(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t len=0; const char *input=JS_ToCStringLen(ctx,&len,argv[0]);
+    if(!input)return JS_EXCEPTION;
+    const uint32_t cap=65536; char *output=malloc(cap);
+    if(!output){JS_FreeCString(ctx,input);return JS_ThrowOutOfMemory(ctx);}
+    int count=browser_layout(input,(uint32_t)len,output,cap);
+    JS_FreeCString(ctx,input);
+    if(count>=0 && count<(int)cap)output[count]=0;else count=-1;
+    JSValue result=count<0?JS_ThrowInternalError(ctx,"layout bridge failed"):JS_ParseJSON(ctx,output,count,"<layout>");
+    free(output); return result;
+}
+
 /* ---------------- 异常序列化 ---------------- */
 
 /* 取已挂异常 → outbox {kind:"exception",payload:{message,stack}}，返回文本副本供调用方 */
@@ -376,6 +391,7 @@ uint32_t qjs_new(void) {
     JS_SetHostPromiseRejectionTracker(S.rt,rejection_tracker,NULL);
     /* JS→宿主唯一出口 */
     JSValue global = JS_GetGlobalObject(S.ctx);
+    JS_SetPropertyStr(S.ctx, global, "__hostLayout", JS_NewCFunction(S.ctx, js_layout, "__hostLayout", 1));
     JS_SetPropertyStr(S.ctx, global, "__hostEnqueue",
                       JS_NewCFunction(S.ctx, js_enqueue, "__hostEnqueue", 2));
     JS_FreeValue(S.ctx, global);

@@ -19,7 +19,7 @@ const wasi = {
   environ_get: (e, b) => { const d = new DataView(mem.buffer); d.setUint32(e, 0, true); d.setUint32(b, 0, true); return 0; },
   proc_exit: (c) => { throw new Error('proc_exit ' + c); },
 };
-const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi });
+const inst = new WebAssembly.Instance(mod, { wasi_snapshot_preview1: wasi, browser:{layout:()=>-1} });
 mem = inst.exports.memory;
 inst.exports._initialize();
 const E = inst.exports;

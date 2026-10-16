@@ -40,7 +40,7 @@ export class CdpConnection {
     this.pageEnabled = false;
     this.runtimeEnabled = false;
     this.lifecycleEnabled = false;
-    this.metrics = { width: 1280, height: 900 };
+    this.metrics = { width: 1024, height: 768 };
     this.navSeq = 0;
     this.scriptExecutionDisabled = null;
     this.ctxSeq = 0;
@@ -70,6 +70,17 @@ export class CdpConnection {
         this.#send({ id: frame.id, error: { code: -32000, message: String((e && e.message) || e) } });
       }
     });
+  }
+
+  requestNavigation() {
+    this.chain=this.chain.then(async()=>{
+      for(let n=0;this.session.pendingNavigation&&n<8;n++){
+        const url=this.session.pendingNavigation;this.session.pendingNavigation=null;
+        const result=await this.#navigate({url});
+        if(result.errorText)throw new Error(result.errorText);
+      }
+      const callbacks=this.afterRespond.splice(0);for(const cb of callbacks)cb();
+    }).catch(e=>{this.session.pushLog('[navigation-error] '+e.message);});
   }
 
   close() {
@@ -148,8 +159,12 @@ export class CdpConnection {
         setTimeout(() => { try { this.ws.close(1000, 'Browser.close'); } catch (e) { /* ignore */ } }, 50);
         return;
       }
+      this.session.layoutReads=0;
       const handler = this.#handlers[method];
+      if(!handler && /^(Input|DOM)\./.test(method))throw new Error('unsupported CDP method: '+method);
       const result = handler ? await handler.call(this, params, frame) : {};
+      for(let n=0;this.session.pendingNavigation&&n<8;n++){const url=this.session.pendingNavigation;this.session.pendingNavigation=null;const nav=await this.#navigate({url});if(nav.errorText)throw new Error('navigation failed: '+nav.errorText);}
+      if(this.session.pendingNavigation)throw new Error('navigation chain limit exceeded');
       this.#result(id, result);
       // 响应已排队，现在才把挂起的事件排进发送链（顺序：响应 → 事件）
       if (this.afterRespond.length) {
@@ -290,16 +305,17 @@ export class CdpConnection {
         finalUrl=document.finalUrl;html=document.html;
       }
     } catch (e) {
-      return { errorText: 'net::ERR_FAILED', frameId: FRAME_ID };
+      return { errorText: 'net::ERR_FAILED: '+String(e.message||e), frameId: FRAME_ID };
     }
     this.emit('Page.frameStartedLoading', { frameId: FRAME_ID }, true);
     // 页面脚本可能读 screen/innerWidth：视口信息要先于脚本派发（puppeteer 会先
     // Emulation.setDeviceMetricsOverride，故这里用当次 metrics）。
-    S.dispatch({ kind: 'viewport', w: this.metrics.width || 1280, h: this.metrics.height || 900 });
+    S.dispatch({ kind: 'viewport', w: this.metrics.width || 1024, h: this.metrics.height || 768 });
     try {
-      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1280,h:this.metrics.height||900} });
+      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1024,h:this.metrics.height||768} });
     } catch (e) {
       S.pushLog('[cdp-nav-error] ' + String((e && e.message) || e));
+      return {errorText:'document initialization failed: '+String(e.message||e),frameId:FRAME_ID};
     }
     // 响应先回，再发事件序列（与 Chrome 一致：navigate 响应 → 生命周期事件）
     const loaderIdFinal = loaderId;
@@ -320,6 +336,15 @@ export class CdpConnection {
 
   // ---------- 方法表 ----------
   #handlers = {
+    'Input.dispatchMouseEvent':async function(params){
+      if(!['mouseMoved','mousePressed','mouseReleased'].includes(params.type))throw new Error('unsupported mouse event');
+      if(!Number.isFinite(params.x)||!Number.isFinite(params.y))throw new Error('mouse coordinates required');
+      const S=this.session;S.ensure();
+      const html=S.engine.callGlobal('__dom_html').value;
+      await S.prepareLayout(html,S.url,this.metrics.width,this.metrics.height);
+      const r=S.engine.callGlobal('__input_mouse',JSON.stringify(params));if(!r.ok)throw new Error(r.error||'input dispatch failed');S.pump();return {};
+    },
+    'Browser.setProxy':function(params){return {proxy:this.session.configureProxy(params.proxy??params.server??null)};},
     // ---- Browser ----
     'Browser.getVersion': () => ({
       protocolVersion: '1.3',
@@ -495,8 +520,8 @@ export class CdpConnection {
       S.ensure();
       const g = S.engine.callGlobal('__dom_html');
       const html = g.ok && g.value ? g.value : '<html><head></head><body></body></html>';
-      const w = Math.min(this.metrics.width || 1280, 1920);
-      const h = Math.min(this.metrics.height || 900, 1920);
+      const w = Math.min(this.metrics.width || 1024, 1920);
+      const h = Math.min(this.metrics.height || 768, 4096);
       const png = await S.paint(html, S.url || 'about:blank', w, h);
       return { data: toB64(png) };
     },
@@ -528,10 +553,14 @@ export class CdpConnection {
     'Emulation.setDeviceMetricsOverride': function (params) {
       if (Number(params.width) > 0) this.metrics.width = Number(params.width);
       if (Number(params.height) > 0) this.metrics.height = Number(params.height);
+      this.session.viewport={w:this.metrics.width,h:this.metrics.height};
+      if(this.session.engine)this.session.dispatch({kind:'viewport',...this.session.viewport});
       return {};
     },
     'Emulation.clearDeviceMetricsOverride': function () {
-      this.metrics = { width: 1280, height: 900 };
+      this.metrics = { width: 1024, height: 768 };
+      this.session.viewport={w:1024,h:768};
+      if(this.session.engine)this.session.dispatch({kind:'viewport',...this.session.viewport});
       return {};
     },
     'Emulation.setUserAgentOverride': () => ({}),

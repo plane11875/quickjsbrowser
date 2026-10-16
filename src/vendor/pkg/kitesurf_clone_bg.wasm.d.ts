@@ -6,6 +6,7 @@ export const add_resource: (a: number, b: number, c: number, d: number) => [numb
 export const clear_resources: () => void;
 export const initialize: () => void;
 export const last_panic: () => [number, number];
+export const layout_query: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
 export const missed_resources: () => any;
 export const render_png_rgba_no_js: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const set_generic_lead: (a: number, b: number, c: any) => number;

@@ -18,6 +18,8 @@ import wasmModule from './engine.wasm';
 import { PRELUDE } from './prelude.js';
 import linkedomSrc from './vendor/linkedom.iife.js';
 import { DOM_WIRE } from './wire.js';
+import { LAYOUT_WIRE } from './layout.js';
+import { INPUT_WIRE } from './input.js';
 
 const TD = new TextDecoder();
 const TE = new TextEncoder();
@@ -76,7 +78,15 @@ export class QjsEngine {
   constructor(opts = {}) {
     this.opts = opts;
     const state = { memory: null };
-    this.instance = new WebAssembly.Instance(wasmModule, { wasi_snapshot_preview1: wasiStubs(state) });
+    this.instance = new WebAssembly.Instance(wasmModule, { wasi_snapshot_preview1: wasiStubs(state), browser:{layout:(ptr,len,out,cap)=>{
+      try {
+        const request=JSON.parse(TD.decode(new Uint8Array(state.memory.buffer,ptr,len)));
+        const response=opts.layout ? opts.layout(request) : {error:'layout bridge unavailable'};
+        const bytes=TE.encode(JSON.stringify(response));
+        if(bytes.length>=cap)return -1;
+        new Uint8Array(state.memory.buffer,out,bytes.length).set(bytes);return bytes.length;
+      }catch(e){const bytes=TE.encode(JSON.stringify({error:String(e.message||e)}));if(bytes.length>=cap)return -1;new Uint8Array(state.memory.buffer,out,bytes.length).set(bytes);return bytes.length;}
+    }} });
     state.memory = this.instance.exports.memory;
     this.exports = this.instance.exports;
     this.exports._initialize(); // reactor：先跑 wasm 构造器（malloc 初始化等）
@@ -89,7 +99,7 @@ export class QjsEngine {
       opts.interruptBudget ?? 3000,
     );
     this.exports.qjs_enable_interrupt();
-    for (const [src, name] of [[PRELUDE, 'prelude.js'], [linkedomSrc, 'linkedom.js'], [DOM_WIRE, 'wire.js']]) {
+    for (const [src, name] of [[PRELUDE, 'prelude.js'], [linkedomSrc, 'linkedom.js'], [DOM_WIRE, 'wire.js'], [LAYOUT_WIRE, 'layout.js'], [INPUT_WIRE, 'input.js']]) {
       const rc = this.eval(src, name, false);
       if (rc !== 0) {
         const tasks = this.takeTasks();

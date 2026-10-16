@@ -1,6 +1,7 @@
 //! Synchronous static rendering boundary for Workers. JS executes in QuickJS.
 //! `blitz-dom/floats` is required: CustomOutOfFlow boxes need its yield handler.
 use std::collections::{BTreeSet, HashMap};
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyrender::{PaintScene as _, render_to_buffer};
@@ -24,6 +25,10 @@ fn missed() -> &'static Mutex<BTreeSet<String>> { MISSED.get_or_init(Default::de
 fn fonts() -> &'static Mutex<Vec<(String, Vec<u8>)>> { FONTS.get_or_init(Default::default) }
 fn generics() -> &'static Mutex<HashMap<String, Vec<String>>> { GENERICS.get_or_init(Default::default) }
 
+thread_local! {
+    static LAYOUT: RefCell<Option<(String, String, u32, u32, HtmlDocument)>> = const { RefCell::new(None) };
+}
+fn invalidate_layout() { LAYOUT.with(|slot| *slot.borrow_mut() = None); }
 struct CachedNet;
 impl NetProvider for CachedNet {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
@@ -43,12 +48,14 @@ impl NetProvider for CachedNet {
 
 #[wasm_bindgen]
 pub fn add_resource(url: &str, bytes: &[u8]) -> String {
+    invalidate_layout();
     resources().lock().unwrap().insert(url.to_string(), bytes.to_vec());
     url.to_string()
 }
 
 #[wasm_bindgen]
 pub fn clear_resources() {
+    invalidate_layout();
     resources().lock().unwrap().clear();
     missed().lock().unwrap().clear();
 }
@@ -100,21 +107,16 @@ pub fn render_png_rgba_no_js(html: &str, base_url: &str, width: u32, height: u32
     if width == 0 || height == 0 || width > 1920 || height > 4096 {
         return Err(JsValue::from_str("viewport must be 1..1920 by 1..4096"));
     }
-    missed().lock().unwrap().clear();
-    let mut document = HtmlDocument::from_html(html, DocumentConfig {
-        base_url: Some(base_url.to_string()),
-        viewport: Some(Viewport::new(width, height, 1.0, ColorScheme::Light)),
-        font_ctx: Some(font_context()),
-        net_provider: Some(Arc::new(CachedNet)),
-        style_threading: StyleThreading::Sequential,
-        ..Default::default()
-    });
-    document.resolve(0.0);
-    let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(|scene| {
-        scene.fill(Fill::NonZero, Default::default(), Color::WHITE, Default::default(), &Rect::new(0.0, 0.0, width as f64, height as f64));
-        blitz_paint::paint_scene(scene, &mut document, 1.0, width, height, 0, 0);
-    }, width, height);
-    Ok(buffer)
+    layout_query(html,base_url,width,height,"","",0.0,0.0)?;
+    LAYOUT.with(|slot| {
+        let mut slot=slot.borrow_mut();
+        let document=&mut slot.as_mut().unwrap().4;
+        let buffer=render_to_buffer::<VelloCpuImageRenderer,_>(|scene| {
+            scene.fill(Fill::NonZero,Default::default(),Color::WHITE,Default::default(),&Rect::new(0.0,0.0,width as f64,height as f64));
+            blitz_paint::paint_scene(scene,document,1.0,width,height,0,0);
+        },width,height);
+        Ok(buffer)
+    })
 }
 
 #[wasm_bindgen]
@@ -127,4 +129,46 @@ pub fn initialize() {
             *message = info.to_string();
         }
     }));
+}
+
+// Synchronous geometry/style bridge. Resource discovery needs layout, not pixels.
+#[wasm_bindgen]
+pub fn layout_query(html: &str, base_url: &str, width: u32, height: u32, selector: &str, property: &str, x: f32, y: f32) -> Result<JsValue, JsValue> {
+    if width == 0 || height == 0 || width > 1920 || height > 4096 { return Err(JsValue::from_str("invalid viewport")); }
+    LAYOUT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let reusable = slot.as_ref().is_some_and(|(h,b,w,v,_)| h == html && b == base_url && *w == width && *v == height);
+        if !reusable {
+            slot.take(); // Release the previous document before allocating its replacement.
+            missed().lock().unwrap().clear();
+            let mut doc = HtmlDocument::from_html(html, DocumentConfig {
+                base_url: Some(base_url.to_string()),
+                viewport: Some(Viewport::new(width,height,1.0,ColorScheme::Light)),
+                font_ctx: Some(font_context()), net_provider: Some(Arc::new(CachedNet)),
+                style_threading: StyleThreading::Sequential, ..Default::default()
+            });
+            doc.resolve(0.0);
+            *slot = Some((html.to_string(),base_url.to_string(),width,height,doc));
+        }
+        let doc = &slot.as_ref().unwrap().4;
+        let result = js_sys::Object::new();
+        let set = |key: &str, value: JsValue| { let _ = js_sys::Reflect::set(&result,&JsValue::from_str(key),&value); };
+        set("cached",JsValue::from_bool(reusable));
+        if property == "@hit" {
+            let mut node = doc.element_from_point(x,y);
+            while let Some(id) = node {
+                let n = doc.get_node(id).unwrap();
+                if let Some(tag) = n.attr("data-qjs-node".into()) { set("id",JsValue::from_str(tag));break; }
+                node = n.parent;
+            }
+        } else if !selector.is_empty() {
+            if let Some(id) = doc.query_selector(selector).map_err(|_|JsValue::from_str("invalid layout selector"))? {
+                if let Some(rect) = doc.get_client_bounding_rect(id) {
+                    for (k,v) in [("x",rect.x),("y",rect.y),("width",rect.width),("height",rect.height)] {set(k,JsValue::from_f64(v));}
+                }
+                if !property.is_empty() {set("value",JsValue::from_str(&doc.resolved_style_value(id,property)));}
+            }
+        }
+        Ok(result.into())
+    })
 }

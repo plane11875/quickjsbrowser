@@ -14,20 +14,20 @@ The browser now executes small page applications within explicit limits. It does
 
 | Work | Limit |
 | --- | --- |
-| Main document network, including relay and body | 2,500 ms |
+| Main document network, including relay and body | 10,000 ms |
 | Main document input | 1 MiB; oversized documents fail explicitly |
-| Page-script network window | 900 ms shared, with abort signals |
-| Page-script/fetch requests | 8 |
-| Individual executable source | 48 KiB |
-| Total executable source | 128 KiB |
+| Page-script network window | 5,000 ms shared, with abort signals |
+| Page-script/fetch requests | 32 |
+| Individual executable source | 512 KiB |
+| Total executable source | 2 MiB |
 | Module graph | depth 8; at most 32 specifiers per source |
 | Script elements | 32 |
-| Script/Promise instruction budget | 150 QuickJS interrupt-handler calls, shared across the page |
-| Page task settling | 64 tasks, 12 rounds, 128 microtasks per drain |
-| Timers | bounded one-shot timers up to 32 ms; longer timers/intervals decline the attempt |
-| Render-resource network window | 2,000 ms shared |
+| Script/Promise instruction budget | 1,000 QuickJS interrupt-handler calls, shared across the page |
+| Page task settling | 256 tasks, 32 rounds, 128 microtasks per drain |
+| Timers | bounded one-shot timers up to 1,000 ms; longer timers/intervals decline the attempt |
+| Render-resource network window | 5,000 ms shared |
 
-Known over-budget script manifests are declined before making any script requests. Response size is checked before reading advertised large bodies and while streaming unadvertised ones. Module compilation has an additional native source-size guard. A JavaScript timeout is not presented as a way to preempt synchronous Wasm compilation: the size checks happen before compilation, and QuickJS's interrupt handler bounds interpreted execution. These are performance policies, not a universal wall-clock guarantee for every native parser, layout operation or upstream condition. Network deadline failures return a clear error rather than waiting ten seconds.
+Known over-budget script manifests are declined before making any script requests. Response size is checked before reading advertised large bodies and while streaming unadvertised ones. Module compilation has an additional native source-size guard. A JavaScript timeout is not presented as a way to preempt synchronous Wasm compilation: the size checks happen before compilation, and QuickJS's interrupt handler bounds interpreted execution. These are performance policies, not a universal wall-clock guarantee for every native parser, layout operation or upstream condition. Network deadline failures return a clear error rather than waiting indefinitely.
 
 The existing CSS, float layout and font rendering stay enabled. Render resource expiry is reported as `resources: limited`, and individual request failures as `resources: partial`; neither is represented as fully loaded.
 
@@ -43,7 +43,7 @@ The existing CSS, float layout and font rendering stay enabled. Render resource 
 
 ## Deliberate remaining limitations
 
-Blitz layout results are not yet connected back to the script DOM. Page use of the current getComputedStyle shim or the placeholder ResizeObserver/IntersectionObserver is reported as an unsupported capability and declines bounded execution rather than silently claiming correctness. Computed dynamic imports that were not prefetched, long-lived application timers, general async/defer semantics, iframe browsing contexts and full CSSOM integration remain incomplete.
+Blitz style/layout results are now connected synchronously to the script DOM for computed properties, bounding rectangles and coordinate hit testing. See [interactive session design and proxy usage](session-browser-flow.md). ResizeObserver/IntersectionObserver remain unsupported. Box/client-rect fragments are still simplified. Computed dynamic imports that were not prefetched, long-lived application timers, general async/defer semantics, iframe browsing contexts and full CSSOM integration remain incomplete.
 
 The multi-megabyte Discourse application still exceeds this deployment's budget. linux.do's noscript view remains a documented fallback, not the full sidebar/avatar/timeline interface. Raising budgets to force that bundle through would reintroduce the expensive path this policy is designed to avoid.
 

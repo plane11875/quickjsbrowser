@@ -70,3 +70,16 @@ CDP 仍是子集：对象句柄、多页面隔离、完整 Network 事件等尚�
 ## Performance-bounded page scripts
 
 Small page applications can use import maps, real DOM observers and bounded asynchronous work. Script inputs, subrequests and execution have explicit budgets; degraded and noscript fallback output is reported to clients. See [capabilities and limits](docs/bounded-browser-capabilities.md) and [deployed validation](docs/bounded-browser-validation-2026-10-16.md).
+
+
+## Explicit proxies and interactive CDP
+
+Set `?proxy=http%3A%2F%2Fhost%3Aport` on the CDP WebSocket URL, or send the
+project-specific `Browser.setProxy` before navigation. The selected route applies
+to all resources and never falls back to direct access. HTTP CONNECT, SOCKS5 and
+SNI relay endpoints are supported; HTTPS websites use native tunnel TLS for the
+standard proxy protocols.
+
+The default viewport is 1024×768. Computed style and geometry query Blitz;
+coordinate mouse events run page handlers and ordinary links navigate.
+See [usage, design, tests and remaining limits](docs/session-browser-flow.md).

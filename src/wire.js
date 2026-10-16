@@ -12,6 +12,7 @@ export const DOM_WIRE = String.raw`
     const parsed = L.parseHTML(String(html));
     doc = parsed.document;
     globalThis.document = doc;
+    if(globalThis.__layout_reset)globalThis.__layout_reset();
     for(const key of ['URL','documentURI'])Object.defineProperty(doc,key,{get:()=>baseUrl,configurable:true});
     Object.defineProperty(doc,'baseURI',{get:()=>new URL(doc.querySelector('base[href]')?.getAttribute('href')||baseUrl,baseUrl).href,configurable:true});
     Object.defineProperty(doc,'location',{get:()=>globalThis.location,configurable:true});
@@ -23,6 +24,8 @@ export const DOM_WIRE = String.raw`
     }
     globalThis.MutationObserver = parsed.MutationObserver;
     Object.defineProperty(doc, 'readyState', { value:'loading', writable:true, configurable:true });
+    if(globalThis.__layout_install)globalThis.__layout_install();
+    if(globalThis.__input_install)globalThis.__input_install();
     return true;
   };
 

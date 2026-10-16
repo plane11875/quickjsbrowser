@@ -77,7 +77,7 @@ const imps=[...new Set(WebAssembly.Module.imports(m).map(i=>i.module+"."+i.name)
 const exps=WebAssembly.Module.exports(m).map(x=>x.name);
 console.log("imports:",imps.join(", "));
 console.log("exports:",exps.filter(e=>e.startsWith("qjs_")).join(", "));
-const need=imps.filter(i=>!i.startsWith("wasi_snapshot_preview1"));
+const need=imps.filter(i=>!i.startsWith("wasi_snapshot_preview1") && i!=="browser.layout");
 if(need.length){console.error("非 wasi 导入:",need);process.exit(1);}
 ' "$OUT"
 echo "OK"

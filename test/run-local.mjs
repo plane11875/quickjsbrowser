@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-const suites = ['local-test', 'prelude-test', 'intl-test', 'session-test', 'navigation-test', 'capabilities-test', 'h2-check', 'ja3-check'];
+const suites = ['local-test', 'prelude-test', 'intl-test', 'session-test', 'navigation-test', 'capabilities-test', 'browser-flow-test', 'h2-check', 'ja3-check'];
 for (const suite of suites) {
   console.log(`\n--- ${suite} ---`);
   const result = spawnSync(process.execPath, ['--experimental-wasm-modules', '--import', './test/register.mjs', `test/${suite}.mjs`], { stdio: 'inherit', timeout: 120_000 });

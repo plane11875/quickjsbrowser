@@ -4,7 +4,19 @@
 // 本地测试不打真网，也不需要走反代，所以这里只实现 connect 返回的流形状：
 // opened / readable / writable / close。startTls 不实现——本地路径不经过它。
 import net from 'node:net';
+import tls from 'node:tls';
 import { Readable, Writable } from 'node:stream';
+
+function wrap(sock,opened){
+  sock.on('error',()=>{});
+  return {opened,readable:Readable.toWeb(sock),writable:Writable.toWeb(sock),
+    startTls({expectedServerHostname}={}){
+      sock.pause();sock.removeAllListeners('data');
+      const secured=tls.connect({socket:sock,servername:expectedServerHostname});
+      const ready=new Promise((resolve,reject)=>{secured.once('secureConnect',resolve);secured.once('error',reject);});
+      return wrap(secured,ready);
+    },close(){sock.destroy();}};
+}
 
 export function connect(address, _options = {}) {
   const host = typeof address === 'string' ? address.replace(/:\d+$/, '') : address.hostname;
@@ -20,11 +32,5 @@ export function connect(address, _options = {}) {
   // error 事件没人监听时 node 会抛未捕获异常，挂个空监听兜住
   sock.on('error', () => {});
 
-  return {
-    opened,
-    readable: Readable.toWeb(sock),
-    writable: Writable.toWeb(sock),
-    startTls() { throw new Error('startTls: node shim 未实现（本地测试不走这条路）'); },
-    close() { try { sock.destroy(); } catch {} },
-  };
+  return wrap(sock,opened);
 }
