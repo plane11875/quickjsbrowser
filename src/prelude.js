@@ -133,7 +133,7 @@ export const PRELUDE = String.raw`
         id,
         url,
         method: (opts.method || 'GET').toUpperCase(),
-        headers: opts.headers || {},
+        headers: opts.headers && typeof opts.headers.entries==='function'?Object.fromEntries(opts.headers.entries()):opts.headers || {},
         body: opts.body != null ? String(opts.body) : null,
       });
       if (signal && typeof signal.addEventListener === 'function') {
@@ -143,12 +143,53 @@ export const PRELUDE = String.raw`
       }
     });
   };
+  class Headers {
+    constructor(init={}){this.map=new Map();if(init&&typeof init[Symbol.iterator]==='function'){for(const [k,v] of init)this.append(k,v);}else for(const [k,v] of Object.entries(init))this.append(k,v);}
+    get(name){return this.map.get(String(name).toLowerCase())??null;}
+    has(name){return this.map.has(String(name).toLowerCase());}
+    set(name,value){this.map.set(String(name).toLowerCase(),String(value).trim());}
+    append(name,value){const old=this.get(name);this.set(name,old===null?value:old+', '+value);}
+    delete(name){this.map.delete(String(name).toLowerCase());}
+    entries(){return this.map.entries();} keys(){return this.map.keys();} values(){return this.map.values();}
+    forEach(fn,self){for(const [k,v] of this.map)fn.call(self,v,k,this);}
+    [Symbol.iterator](){return this.entries();}
+  }
+  globalThis.Headers=Headers;
+  class XMLHttpRequest {
+    constructor(){this.readyState=0;this.status=0;this.statusText='';this.responseURL='';this.responseType='';this.responseText='';this.response=null;this.timeout=0;this.withCredentials=false;this.upload={addEventListener(){},removeEventListener(){}};this.listeners=new Map();this.requestHeaders={};this.responseHeaders=new Headers();this.sent=false;}
+    addEventListener(type,fn){let list=this.listeners.get(type);if(!list)this.listeners.set(type,list=new Set());list.add(fn);}
+    removeEventListener(type,fn){this.listeners.get(type)?.delete(fn);}
+    dispatchEvent(event){const fn=this['on'+event.type];if(typeof fn==='function')fn.call(this,event);for(const listener of this.listeners.get(event.type)||[])typeof listener==='function'?listener.call(this,event):listener.handleEvent(event);return true;}
+    emit(type){this.dispatchEvent(new Event(type));}
+    state(n){this.readyState=n;this.emit('readystatechange');}
+    open(method,url,async=true){if(async===false)throw new Error('Synchronous XMLHttpRequest is unsupported');if(this.sent)this.abort();this.method=String(method).toUpperCase();this.url=new URL(String(url),document.baseURI).href;this.requestHeaders={};this.responseText='';this.status=0;this.state(1);}
+    setRequestHeader(k,v){if(this.readyState!==1||this.sent)throw new Error('InvalidStateError');k=String(k).toLowerCase();this.requestHeaders[k]=this.requestHeaders[k]?this.requestHeaders[k]+', '+v:String(v);}
+    getResponseHeader(k){return this.readyState>=2?this.responseHeaders.get(k):null;}
+    getAllResponseHeaders(){return this.readyState>=2?[...this.responseHeaders].map(([k,v])=>k+': '+v+'\r\n').join(''):'';}
+    overrideMimeType(value){this.mimeType=String(value);}
+    abort(){if(this.sent){this.sent=false;this.controller.abort();clearTimeout(this.timeoutId);this.status=0;this.state(4);this.emit('abort');this.emit('loadend');}this.readyState=0;}
+    send(body=null){
+      if(this.readyState!==1||this.sent)throw new Error('InvalidStateError');this.sent=true;this.controller=new AbortController();this.emit('loadstart');
+      if(this.timeout>0)this.timeoutId=setTimeout(()=>{if(this.sent){this.sent=false;this.controller.abort();this.status=0;this.state(4);this.emit('timeout');this.emit('loadend');}},this.timeout);
+      fetch(this.url,{method:this.method,headers:this.requestHeaders,body:['GET','HEAD'].includes(this.method)?undefined:body,signal:this.controller.signal}).then(async r=>{
+        if(!this.sent)return;this.status=r.status;this.statusText=r.statusText;this.responseURL=r.url;this.responseHeaders=r.headers;this.state(2);this.state(3);
+        this.responseText=await r.text();if(!this.sent)return;
+        if(this.responseType==='json'){try{this.response=JSON.parse(this.responseText);}catch{this.response=null;}}
+        else if(this.responseType==='arraybuffer')this.response=new TextEncoder().encode(this.responseText).buffer;
+        else if(this.responseType==='document')this.response=new DOMParser().parseFromString(this.responseText,this.mimeType||r.headers.get('content-type')||'text/html');
+        else this.response=this.responseText;
+        this.sent=false;clearTimeout(this.timeoutId);this.state(4);this.emit('load');this.emit('loadend');
+      }).catch(()=>{if(!this.sent)return;this.sent=false;clearTimeout(this.timeoutId);this.status=0;this.state(4);this.emit('error');this.emit('loadend');});
+    }
+  }
+  for(const [k,v] of Object.entries({UNSENT:0,OPENED:1,HEADERS_RECEIVED:2,LOADING:3,DONE:4})){XMLHttpRequest[k]=v;XMLHttpRequest.prototype[k]=v;}
+  globalThis.XMLHttpRequest=XMLHttpRequest;
   const mkResp = (r) => {
     const body = r.text != null ? r.text : null;
     const bin = r.base64 != null ? r.base64 : null;
     return {
       ok: !!r.ok, status: r.status || 0, statusText: r.statusText || '',
-      url: r.url || '', headers: r.headers || {},
+      url: r.url || '', headers: new Headers(r.headers || {}),
       text: () => Promise.resolve(body != null ? body : ''),
       json: () => Promise.resolve(body != null ? JSON.parse(body) : null),
       arrayBuffer: () => {
@@ -160,6 +201,24 @@ export const PRELUDE = String.raw`
     };
   };
 
+  let dynamicImportId=0;
+  const pendingImports=new Map();
+  globalThis.__dynamicImport=(base,spec,options)=>new Promise((resolve,reject)=>{
+    const id=++dynamicImportId;pendingImports.set(id,{resolve,reject,options});
+    enqueue('dynamic_import',{id,base,spec:String(spec)});
+  });
+  class MessagePort {
+    constructor(){this.peer=null;this.closed=false;this.started=false;this.queue=[];this.listeners=new Set();this.handler=null;}
+    set onmessage(fn){this.handler=fn;if(typeof fn==='function')this.start();}get onmessage(){return this.handler;}
+    addEventListener(type,fn){if(type==='message')this.listeners.add(fn);}
+    removeEventListener(type,fn){if(type==='message')this.listeners.delete(fn);}
+    start(){this.started=true;this.schedule();}
+    close(){this.closed=true;this.queue=[];this.peer=null;}
+    postMessage(value){if(this.closed||!this.peer||this.peer.closed)return;const data=structuredClone(value);this.peer.queue.push(data);this.peer.schedule();}
+    schedule(){if(!this.started||this.closed||this.scheduled||!this.queue.length)return;this.scheduled=true;setTimeout(()=>{this.scheduled=false;if(this.closed)return;const queued=this.queue.splice(0);for(const data of queued){const event=new Event('message');Object.assign(event,{data,origin:'',ports:[],source:null});if(typeof this.handler==='function')this.handler.call(this,event);for(const listener of this.listeners)listener.call(this,event);}this.schedule();},0);}
+  }
+  globalThis.MessagePort=MessagePort;
+  globalThis.MessageChannel=class MessageChannel {constructor(){this.port1=new MessagePort();this.port2=new MessagePort();this.port1.peer=this.port2;this.port2.peer=this.port1;}};
   // ---- location / history / navigator ----
   let locUrl = 'about:blank';
   // URL 类在本文件后面才定义（浏览器别名段之前），故运行时惰性取。
@@ -497,14 +556,14 @@ export const PRELUDE = String.raw`
   // （必须等所有全局桩函数都定义完，否则 getComputedStyle / matchMedia 这些
   //   后面才定义的会漏登记，toString 直接暴露 JS 源码）
 
-  let histState = null;
-  globalThis.history = {
-    pushState: (s, _t, u) => { histState = s === undefined ? null : s; enqueue('history', { mode: 'push', url: u == null ? null : String(u), state: s === undefined ? null : JSON.stringify(s) }); },
-    replaceState: (s, _t, u) => { histState = s === undefined ? null : s; enqueue('history', { mode: 'replace', url: u == null ? null : String(u), state: s === undefined ? null : JSON.stringify(s) }); },
-    back: () => {}, forward: () => {}, go: () => {},
-    get length() { return 1; },
-    get state() { return histState; },
+  let histState=null,histLength=1;
+  const changeHistory=(mode,state,url)=>{
+    let next=locUrl;if(url!=null){next=new URL(String(url),locUrl).href;if(new URL(next).origin!==new URL(locUrl).origin)throw new Error('SecurityError');}
+    histState=state===undefined?null:structuredClone(state);locUrl=next;globalThis.__dom_url?.(next);if(mode==='push')histLength++;
+    enqueue('history',{mode,url:next,state:JSON.stringify(histState)});
   };
+  globalThis.history={pushState:(s,t,u)=>changeHistory('push',s,u),replaceState:(s,t,u)=>changeHistory('replace',s,u),go:delta=>enqueue('history_go',{delta:Number(delta)||0}),back:()=>enqueue('history_go',{delta:-1}),forward:()=>enqueue('history_go',{delta:1}),get state(){return histState;},get length(){return histLength;},scrollRestoration:'auto'};
+
 
   // ---- storage：VM 侧快照读写，变更出队给宿主持久化 ----
   let sLocal = {}, sSession = {};
@@ -567,6 +626,11 @@ export const PRELUDE = String.raw`
   };
 
   // ---- 浏览器别名与占位类（Vue/React bundle 的 instanceof/typeof 探测路径） ----
+  class Window {}
+  Object.setPrototypeOf(Window.prototype,Object.getPrototypeOf(globalThis));
+  Object.setPrototypeOf(globalThis,Window.prototype);
+  globalThis.Window=Window;
+  Object.defineProperty(globalThis,Symbol.toStringTag,{value:'Window',configurable:true});
   globalThis.window = globalThis;
   globalThis.self = globalThis;
   globalThis.Node = class Node {};
@@ -608,10 +672,27 @@ export const PRELUDE = String.raw`
     timeOrigin: perfBase,
     mark: () => {}, measure: () => {}, clearMarks: () => {}, clearMeasures: () => {},
     getEntriesByType: () => [], getEntriesByName: () => [], clearResourceTimings: () => {},
-    navigation: undefined,
+    navigation: {type:0,redirectCount:0},
+    timing: Object.fromEntries(['navigationStart','fetchStart','domainLookupStart','domainLookupEnd','connectStart','connectEnd','requestStart','responseStart','responseEnd','domLoading','domInteractive','domContentLoadedEventStart','domContentLoadedEventEnd','domComplete','loadEventStart','loadEventEnd'].map(k=>[k,perfBase])),
+  };
+  globalThis.CSS = {
+    supports(property,value){
+      if(!globalThis.document)return false;
+      const condition=arguments.length>1?String(property)+': '+String(value):String(property);
+      return !!__hostLayout(JSON.stringify({html:'<!doctype html><html><body></body></html>',selector:condition,property:'@supports'})).supported;
+    },
+    escape(value){
+      const s=String(value);let out='';
+      for(let i=0;i<s.length;i++){const n=s.charCodeAt(i),c=s[i];
+        if(!n){out+='\ufffd';continue;}
+        if((n>=1&&n<=31)||n===127||(i===0&&n>=48&&n<=57)||(i===1&&n>=48&&n<=57&&s[0]==='-')){out+='\\'+n.toString(16)+' ';continue;}
+        if(i===0&&c==='-'&&s.length===1){out+='\\-';continue;}
+        out+=n>=128||c==='-'||c==='_'||/[a-zA-Z0-9]/.test(c)?c:'\\'+c;
+      }return out;
+    }
   };
   // queueMicrotask：比 setTimeout(0) 更早，且不受定时器队列影响
-  globalThis.queueMicrotask = (fn) => { if (typeof fn === 'function') { try { fn(); } catch (e) { console.error(String(e)); } } };
+  globalThis.queueMicrotask = (fn) => { if(typeof fn!=='function')throw new TypeError('callback required');Promise.resolve().then(()=>{try{fn();}catch(e){globalThis.__report_page_error?.(e,location.href);}}); };
   globalThis.requestIdleCallback = (fn) => armTimer(
     typeof fn === 'function' ? (d) => fn({ didTimeout: false, timeRemaining: () => 0 }) : null, 1, false);
   globalThis.cancelIdleCallback = (id) => { timers.delete(Number(id)); };
@@ -1078,6 +1159,12 @@ export const PRELUDE = String.raw`
       return undefined;
     }
     switch (m.kind) {
+      case 'history_sync': histState=m.state;histLength=m.length;break;
+      case 'dynamic_import_resolve': {
+        const p=pendingImports.get(m.id);if(!p)break;pendingImports.delete(m.id);
+        if(m.error)p.reject(new TypeError(m.error));else import(m.url,p.options).then(p.resolve,p.reject);
+        break;
+      }
       case 'timer_fire': {
         const t = timers.get(m.id);
         if (!t) break;

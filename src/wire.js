@@ -4,6 +4,11 @@
 export const DOM_WIRE = String.raw`
 (() => {
   const L = globalThis.__linkedom;
+  L.Document.prototype.adoptNode=function(node){
+    if(!node||[9,10].includes(node.nodeType))throw new TypeError('Cannot adopt document');
+    if(node.parentNode)node.parentNode.removeChild(node);
+    const adopt=n=>{n.ownerDocument=this;for(const a of n.attributes||[])a.ownerDocument=this;for(const child of n.childNodes||[])adopt(child);};adopt(node);return node;
+  };
   let doc = null;
   let baseUrl = 'about:blank';
 
@@ -12,9 +17,11 @@ export const DOM_WIRE = String.raw`
     const parsed = L.parseHTML(String(html));
     doc = parsed.document;
     globalThis.document = doc;
+    Object.defineProperty(doc,'referrer',{value:globalThis.__document_referrer||'',configurable:true});
     if(globalThis.__layout_reset)globalThis.__layout_reset();
     for(const key of ['URL','documentURI'])Object.defineProperty(doc,key,{get:()=>baseUrl,configurable:true});
     Object.defineProperty(doc,'baseURI',{get:()=>new URL(doc.querySelector('base[href]')?.getAttribute('href')||baseUrl,baseUrl).href,configurable:true});
+    Object.defineProperty(doc,'scrollingElement',{get:()=>doc.compatMode==='BackCompat'?doc.body:doc.documentElement,configurable:true});
     Object.defineProperty(doc,'location',{get:()=>globalThis.location,configurable:true});
     Object.defineProperty(doc,'cookie',{get:()=>globalThis.__get_document_cookie(),set:v=>globalThis.__set_document_cookie(v),configurable:true});
     for (const k of ['Node', 'Element', 'HTMLElement', 'SVGElement', 'DocumentFragment',
@@ -22,7 +29,30 @@ export const DOM_WIRE = String.raw`
       ...Object.keys(L).filter(k => /^HTML.*Element$/.test(k))]) {
       if (parsed[k]) { try { globalThis[k] = parsed[k]; } catch (e) {} }
     }
+    let focused=null;
+    Object.defineProperty(doc,'activeElement',{get:()=>focused?.isConnected?focused:doc.body,configurable:true});
+    doc.hasFocus=()=>true;
+    globalThis.HTMLElement.prototype.focus=function(){
+      if(!this.isConnected||focused===this)return;const old=focused;focused=this;
+      if(old){old.dispatchEvent(new L.Event('blur'));old.dispatchEvent(new L.Event('focusout',{bubbles:true}));}
+      this.dispatchEvent(new L.Event('focus'));this.dispatchEvent(new L.Event('focusin',{bubbles:true}));
+    };
+    globalThis.HTMLElement.prototype.blur=function(){if(focused!==this)return;focused=null;this.dispatchEvent(new L.Event('blur'));this.dispatchEvent(new L.Event('focusout',{bubbles:true}));};
     globalThis.MutationObserver = parsed.MutationObserver;
+    globalThis.customElements = parsed.customElements;
+    globalThis.DOMParser = class DOMParser extends L.DOMParser {
+      parseFromString(source,type){
+        source=String(source);
+        if(String(type).toLowerCase()==='text/html'&&!/<html(?:[\s>])/i.test(source)){
+          source=/<(?:body|head)(?:[\s>])/i.test(source)?'<html>'+source+'</html>':'<!doctype html><html><head></head><body>'+source+'</body></html>';
+        }
+        return super.parseFromString(source,type);
+      }
+    };
+    Object.defineProperty(doc,'implementation',{value:{
+      createHTMLDocument(title){const d=L.parseHTML('<!doctype html><html><head></head><body></body></html>').document;if(title!==undefined)d.title=String(title);return d;},
+      createDocument(namespace,qualifiedName){return new L.DOMParser().parseFromString(qualifiedName?'<'+qualifiedName+' xmlns="'+(namespace||'')+'"/>':'','application/xml');}
+    },configurable:true});
     Object.defineProperty(doc, 'readyState', { value:'loading', writable:true, configurable:true });
     if(globalThis.__layout_install)globalThis.__layout_install();
     if(globalThis.__input_install)globalThis.__input_install();

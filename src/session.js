@@ -11,6 +11,7 @@ import { moduleSpecifiers } from './module-resolver.js';
 import { CdpConnection } from './cdp.js';
 import { requestHeaders, guessType } from './fingerprint.js';
 import { relayFetch } from './net/relay.js';
+import { ResourceCache } from './resource-cache.js';
 import { normalizeProxy, publicProxy } from './net/proxy.js';
 
 import initBlitz, { add_font, set_generic_lead, add_resource, clear_resources,
@@ -105,12 +106,12 @@ export class QjsSession {
     this.url = 'about:blank';
     this.storage = { local: {}, session: {} };
     this.cookie = '';
-    this.proxy = null;
+    this.proxy = null;this.resourceCache=new ResourceCache();this.directOrigins=new Map();this.routeStats={relay:0,direct:0,fallback:0};
     this.pendingNavigation = null;
     this.pageLoad=null;this.loadBatchRemaining=null;this.operation=Promise.resolve();
     this.renderFailed=new Set();this.renderAssets=new Map();
     this.viewport={w:1024,h:768};
-    this.layoutReads=0;
+    this.layoutReads=0;this.pendingDynamicImports=[];
     // 模块源码缓存：url → {text, kind}；null 值 = 已确认取不到（负缓存，
     // 避免每次导航都去撞同一个死链）
     this.modCache = new Map();
@@ -119,7 +120,7 @@ export class QjsSession {
     this.modCacheFetches = 0;
     // CDP 面（cdp.js 协议适配层使用）：连接集合、新文档早期脚本、事件外发钩子
     this.cdpConns = new Set();
-    this.cdpEarlyScripts = null;
+    this.cdpEarlyScripts = null;this.navigationEntries=[];this.navigationIndex=-1;this.nextNavigationId=1;this.pendingHistoryIndex=null;
   }
 
   withOperation(fn) {
@@ -132,6 +133,7 @@ export class QjsSession {
   }
 
   async fetchLoadingResource(url,init) {
+    return this.resourceCache.fetch(url,init,async()=>{
     if(this.loadBatchRemaining===0){const e=new Error('resource batch exhausted');e.loadingPending=true;throw e;}
     if(this.loadBatchRemaining!=null)this.loadBatchRemaining--;
     try{return await this.smartFetch(url,init);}
@@ -139,6 +141,7 @@ export class QjsSession {
       if(/Too many subrequests/i.test(e.message)){this.loadBatchRemaining=0;e.loadingPending=true;}
       throw e;
     }
+    });
   }
 
   loadingState() {
@@ -171,7 +174,7 @@ export class QjsSession {
     this.dispatch({ kind: 'random', b64: toB64(b) });
     this.dispatch({ kind: 'storage', local: this.storage.local, session: this.storage.session });
     this.dispatch({ kind: 'cookie', value: this.cookie });
-    this.pushLoc();
+    this.pushLoc();this.pushHistory();
   }
 
   dispatch(obj) {
@@ -221,16 +224,25 @@ export class QjsSession {
       case 'fetch':
         this.ctx.waitUntil(this.hostFetch(t.payload));
         break;
+      case 'dynamic_import': {
+        this.pendingDynamicImports.push({payload:t.payload,engine:this.engine});
+        this.ctx.waitUntil(this.withOperation(()=>this.advanceDynamicImports()));
+        break;
+      }
       case 'navigate': {
         this.pendingNavigation=new URL(t.payload.url,this.url==='about:blank'?'https://session.local/':this.url).href;
         const conn=this.cdpConns.values().next().value;conn?.requestNavigation();
         break;
       }
       case 'history': {
-        if (t.payload.url) {
-          this.url = new URL(t.payload.url, this.url).href;
-          this.pushLoc();
-        }
+        this.url=t.payload.url?new URL(t.payload.url,this.url).href:this.url;
+        this.recordNavigation(this.url,{replace:t.payload.mode==='replace',forcePush:t.payload.mode==='push'});
+        this.navigationEntries[this.navigationIndex].state=t.payload.state==null?null:JSON.parse(t.payload.state);
+        this.pushLoc();this.pushHistory();break;
+      }
+      case 'history_go': {
+        const index=this.navigationIndex+Number(t.payload.delta||0);
+        if(index>=0&&index<this.navigationEntries.length){this.pendingHistoryIndex=index;this.pendingNavigation=this.navigationEntries[index].url;this.cdpConns.values().next().value?.requestNavigation();}
         break;
       }
       case 'storage_set': {
@@ -302,6 +314,24 @@ export class QjsSession {
       this.dispatch({ kind: 'fetch_resolve', id: p.id, error: String((e && e.message) || e) });
       this.pump();
     }
+  }
+
+  recordNavigation(url,{index,replace=false,forcePush=false}={}) {
+    if(Number.isInteger(index)&&this.navigationEntries[index]){this.navigationIndex=index;return;}
+    const current=this.navigationEntries[this.navigationIndex];
+    if(current&&(replace||(!forcePush&&current.url===url))){current.url=url;return;}
+    this.navigationEntries.splice(this.navigationIndex+1);
+    this.navigationEntries.push({id:this.nextNavigationId++,url,userTypedURL:url,title:'',transitionType:'link',state:null});
+    if(this.navigationEntries.length>128)this.navigationEntries.shift();this.navigationIndex=this.navigationEntries.length-1;
+  }
+
+  pushHistory(){if(this.engine)this.dispatch({kind:'history_sync',state:this.navigationEntries[this.navigationIndex]?.state??null,length:this.navigationEntries.length||1});}
+
+  async advanceDynamicImports() {
+    const pending=this.pendingDynamicImports.splice(0).filter(p=>p.engine===this.engine);
+    if(!pending.length||!this.pageLoad?.pipeline)return;
+    this.pageLoad.pipeline.dynamicImports.push(...pending.map(p=>p.payload));this.pageLoad.pending=true;this.pageLoad.stage='scripts';
+    this.beginLoadBatch(32);await this.advancePageLoad();
   }
 
   // ---- 模块图预取（JS 侧解析器与 C normalize_module 对齐：绝对URL/根相对/点段/裸→jsdelivr） ----
@@ -639,14 +669,14 @@ html { zoom: 1.6 !important; }
   }
 
   /** 页面脚本管线：抽脚本 → 预取 → DOM 建立 → 经典脚本 → 模块 → settle → 序列化 */
-  async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport, resourceBatch = 32 } = {}) {
+  async runPageScripts(html, baseUrl, { serialize = true, executeScripts, viewport, resourceBatch = 32, historyIndex, replaceHistory=false } = {}) {
     this.beginLoadBatch(resourceBatch);
-    this.pendingNavigation=null;
-    const enabled=executeScripts ?? true;
+    this.pendingNavigation=null;this.pageLoad=null;
+    const enabled=executeScripts ?? true;this.recordNavigation(baseUrl,{index:historyIndex,replace:replaceHistory});
     // A new document gets a fresh VM: old globals, pending jobs and module
     // records must not survive navigation or an aborted page application.
     if(this.engine){this.engine.dispose();this.engine=null;}
-    this.ensure();this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();this.renderFailed.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
+    const previousUrl=this.url;this.ensure();this.engine.callGlobal('eval',`globalThis.__document_referrer=${JSON.stringify(previousUrl==='about:blank'?'':new URL(previousUrl).origin===new URL(baseUrl).origin?previousUrl:new URL(previousUrl).origin+'/')}`);this.url=baseUrl;this.pushLoc();this.layoutReads=0;this.renderAssets.clear();this.renderFailed.clear();activeResourceSession=null;if(viewport){this.viewport=viewport;this.dispatch({kind:'viewport',...viewport});}
     this.dispatch({kind:'load_dom',html,baseUrl});
     const early=()=>{
       for(const item of this.cdpEarlyScripts||[]){
@@ -695,14 +725,46 @@ html { zoom: 1.6 !important; }
     if(enabled)this.engine.callGlobal('eval',`for(const n of document.querySelectorAll('noscript'))n.remove()`);
     this.pageStatus.rendering=enabled?(this.pageStatus.status==='executed'?'scripted':this.pageStatus.executed?'partial':'uninitialized'):(manifest.hasFallback?'fallback':'static');
     job.pending=false;job.stage='complete';this.loadBatchRemaining=null;
+    const entry=this.navigationEntries[this.navigationIndex];if(entry)entry.title=this.engine.callGlobal('eval','document.title').value||'';
     this.pushLog('[page-status] '+JSON.stringify(this.pageStatus));
-    for(const c of this.cdpConns)c.onLoadingComplete?.();
+    if(!job.lifecycleComplete){job.lifecycleComplete=true;for(const c of this.cdpConns)c.onLoadingComplete?.();}
   }
 
-  /** Explicit session route: either direct fetch or the selected proxy for every resource. */
+  /** SNI routing is decided independently at each redirect target. */
   async smartFetch(url, init = {}) {
-    if(this.proxy)return relayFetch(this.proxy,url,init);
-    return fetch(url,init);
+    if(!this.proxy || this.proxy.type!=='sni')return this.fetchRoute(url,init);
+    let target=new URL(url),options={...init},method=(init.method||'GET').toUpperCase();
+    for(let hop=0;;hop++){
+      const r=await this.fetchRoute(target.href,{...options,method,redirect:'manual'});
+      const location=r.headers.get('location'),redirect=[301,302,303,307,308].includes(r.status)&&location;
+      if(!redirect||init.redirect==='manual')return r;
+      r.body?.cancel().catch(()=>{});
+      if(init.redirect==='error')throw new Error('redirect disallowed');
+      if(hop>=5)throw new Error('too many redirects');
+      const next=new URL(location,target),headers=new Headers(options.headers);
+      if(next.origin!==target.origin){headers.delete('authorization');headers.delete('cookie');}
+      if((r.status===303&&method!=='HEAD')||([301,302].includes(r.status)&&method==='POST')){method='GET';options.body=undefined;headers.delete('content-type');headers.delete('content-length');}
+      options.headers=headers;target=next;
+    }
+  }
+
+  async fetchRoute(url, init = {}) {
+    const target=new URL(url),origin=target.origin;
+    const safe=['GET','HEAD'].includes((init.method||'GET').toUpperCase());
+    const direct=async()=>{this.routeStats.direct++;const r=await fetch(url,init);this.pushLog(`[route] direct ${target.origin} ${r.status}`);return r;};
+    if(!this.proxy)return direct();
+    if(this.proxy.type==='sni'&&safe&&this.directOrigins.get(origin)>Date.now())return direct();
+    try{
+      this.routeStats.relay++;
+      const r=await relayFetch(this.proxy,url,init);
+      this.pushLog(`[route] ${this.proxy.type} ${origin} ${r.status}`);
+      return r;
+    }catch(e){
+      if(this.proxy.type!=='sni'||!safe||init.signal?.aborted||/Too many subrequests/i.test(e.message))throw e;
+      this.routeStats.fallback++;this.pushLog(`[route] fallback ${origin}: ${e.message}`);
+      try{const r=await direct();if(r.ok){if(this.directOrigins.size>=128)this.directOrigins.delete(this.directOrigins.keys().next().value);this.directOrigins.set(origin,Date.now()+300000);}return r;}
+      catch(d){throw new Error(`SNI relay: ${e.message}; direct: ${d.message}`);}
+    }
   }
 
   configureProxy(input) {
@@ -849,12 +911,13 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
     this.url = 'about:blank';
     this.storage = { local: {}, session: {} };
     this.cookie = '';
-    this.proxy = null;
+    this.proxy = null;this.resourceCache.clear();this.directOrigins.clear();this.routeStats={relay:0,direct:0,fallback:0};
     this.pendingNavigation = null;
     this.pageLoad=null;this.pageStatus=null;this.loadBatchRemaining=null;this.renderPending=[];this.renderFailed.clear();
     this.renderAssets=new Map();if(activeResourceSession===this)clear_resources();activeResourceSession=null;
     this.viewport={w:1024,h:768};
     this.layoutReads=0;
+    this.navigationEntries=[];this.navigationIndex=-1;this.pendingHistoryIndex=null;this.pendingDynamicImports=[];
     this.modCache.clear();
     this.modCacheBytes = 0;
     this.modCacheHits = 0;
@@ -921,7 +984,7 @@ globalThis.__qqb_tr_get = () => globalThis.__qqb_tr;
         return Response.json({
           url: this.url, storage: this.storage, cookie: this.cookie, live: !!this.engine, page:this.pageStatus||null,
           durableObjectId:this.ctx.id?.toString()||null,
-          proxy:publicProxy(this.proxy),loading:this.loadingState(),
+          proxy:publicProxy(this.proxy),loading:this.loadingState(),resourceCache:this.resourceCache.stats(),routes:this.routeStats,
           modCache: { entries: this.modCache.size, bytes: this.modCacheBytes, hits: this.modCacheHits, fetches: this.modCacheFetches },
         });
       }

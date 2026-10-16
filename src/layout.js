@@ -21,6 +21,7 @@ export const LAYOUT_WIRE = String.raw`
   const rect=(el)=>{const r=query(el);const x=r.x||0,y=r.y||0,width=r.width||0,height=r.height||0;return {x,y,width,height,left:x,top:y,right:x+width,bottom:y+height,toJSON(){return {x,y,width,height,left:x,top:y,right:x+width,bottom:y+height};}};};
   globalThis.__layout_install=()=>{
     const proto=globalThis.Element.prototype;
+    for(const key of ['scrollTop','scrollLeft'])if(!(key in proto))Object.defineProperty(proto,key,{configurable:true,get(){return this['__'+key]||0;},set(v){this['__'+key]=Math.max(0,Number(v)||0);}});
     proto.getBoundingClientRect=function(){return rect(this);};
     proto.getClientRects=function(){const r=rect(this);const out=r.width||r.height?[r]:[];out.item=i=>out[i]||null;return out;};
     for(const [name,field] of [['offsetWidth','width'],['offsetHeight','height'],['clientWidth','width'],['clientHeight','height']])Object.defineProperty(proto,name,{configurable:true,get(){return Math.round(rect(this)[field]);}});

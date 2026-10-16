@@ -154,7 +154,9 @@ pub fn layout_query(html: &str, base_url: &str, width: u32, height: u32, selecto
         let result = js_sys::Object::new();
         let set = |key: &str, value: JsValue| { let _ = js_sys::Reflect::set(&result,&JsValue::from_str(key),&value); };
         set("cached",JsValue::from_bool(reusable));
-        if property == "@hit" {
+        if property == "@supports" {
+            set("supported",JsValue::from_bool(doc.css_supports_condition(selector)));
+        } else if property == "@hit" {
             let mut node = doc.element_from_point(x,y);
             while let Some(id) = node {
                 let n = doc.get_node(id).unwrap();

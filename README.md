@@ -98,8 +98,9 @@ Small page applications can use import maps, real DOM observers and bounded asyn
 Open a CDP session with `?proxy=IP%3Aport`, or send the project-specific command
 `Browser.setProxy({ip, port})` before navigation. This wraps the project's existing
 self-implemented SNI/TLS relay as a browser proxy. The endpoint does not need to
-speak HTTP CONNECT or SOCKS5. Every page resource follows the selected route;
-failures never trigger automatic direct access.
+speak HTTP CONNECT or SOCKS5. SNI requests use the relay first; failed GET/HEAD
+requests may use native direct fetch. Successful direct origins are remembered
+for five minutes. Explicit HTTP CONNECT and SOCKS5 proxies remain strict.
 
 The default viewport is 1024×768. Computed style and geometry query Blitz;
 coordinate mouse events run page handlers and ordinary links navigate.

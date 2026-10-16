@@ -237,6 +237,7 @@ export class CdpConnection {
     const deadline = Date.now() + EVAL_TIMEOUT_MS;
     for (;;) {
       this.session.pump();
+      if(this.session.pendingDynamicImports?.length)await this.session.advanceDynamicImports();
       const g = eng.callGlobal('__cdp_get');
       let res;
       try { res = JSON.parse(g.value || '{"done":false}'); } catch (e) { res = { done: false }; }
@@ -312,7 +313,8 @@ export class CdpConnection {
     // Emulation.setDeviceMetricsOverride，故这里用当次 metrics）。
     S.dispatch({ kind: 'viewport', w: this.metrics.width || 1024, h: this.metrics.height || 768 });
     try {
-      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1024,h:this.metrics.height||768},resourceBatch:params.resourceBatch??32 });
+      await S.runPageScripts(html, finalUrl, { serialize: false, executeScripts:this.scriptExecutionDisabled===null?undefined:!this.scriptExecutionDisabled, viewport:{w:this.metrics.width||1024,h:this.metrics.height||768},resourceBatch:params.resourceBatch??32,historyIndex:params.historyIndex??S.pendingHistoryIndex });
+      S.pendingHistoryIndex=null;
     } catch (e) {
       S.pushLog('[cdp-nav-error] ' + String((e && e.message) || e));
       return {errorText:'document initialization failed: '+String(e.message||e),frameId:FRAME_ID};
@@ -503,6 +505,8 @@ export class CdpConnection {
       this.scriptExecutionDisabled=!!params.value;return {};
     },
     'Page.navigate': function (params) { return this.#navigate(params); },
+    'Page.getNavigationHistory': function(){return {currentIndex:this.session.navigationIndex,entries:this.session.navigationEntries.map(({state,...entry})=>entry)};},
+    'Page.navigateToHistoryEntry': async function(params){const index=this.session.navigationEntries.findIndex(e=>e.id===params.entryId);if(index<0)throw new Error('Unknown history entry');const nav=await this.#navigate({url:this.session.navigationEntries[index].url,historyIndex:index});if(nav.errorText)throw new Error(nav.errorText);return {};},
     'Page.addScriptToEvaluateOnNewDocument': function (params) {
       const S = this.session;
       if (!S.cdpEarlyScripts) S.cdpEarlyScripts = [];
@@ -548,9 +552,6 @@ export class CdpConnection {
         contentSize: { x: 0, y: 0, width: w, height: h },
         cssContentSize: { x: 0, y: 0, width: w, height: h },
       };
-    },
-    'Page.getNavigationHistory': function () {
-      return { currentIndex: 0, entries: [{ id: 0, url: this.session.url || 'about:blank', userTypedURL: this.session.url || 'about:blank', title: '' }] };
     },
     'Page.setDocumentContent': () => ({}),
     'Page.bringToFront': () => ({}),

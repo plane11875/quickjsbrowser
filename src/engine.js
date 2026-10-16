@@ -19,6 +19,7 @@ import { PRELUDE } from './prelude.js';
 import linkedomSrc from './vendor/linkedom.iife.js';
 import { DOM_WIRE } from './wire.js';
 import { LAYOUT_WIRE } from './layout.js';
+import { OBSERVER_WIRE } from './observers.js';
 import { INPUT_WIRE } from './input.js';
 
 const TD = new TextDecoder();
@@ -99,7 +100,7 @@ export class QjsEngine {
       opts.interruptBudget ?? 3000,
     );
     this.exports.qjs_enable_interrupt();
-    for (const [src, name] of [[PRELUDE, 'prelude.js'], [linkedomSrc, 'linkedom.js'], [DOM_WIRE, 'wire.js'], [LAYOUT_WIRE, 'layout.js'], [INPUT_WIRE, 'input.js']]) {
+    for (const [src, name] of [[PRELUDE, 'prelude.js'], [linkedomSrc, 'linkedom.js'], [DOM_WIRE, 'wire.js'], [LAYOUT_WIRE, 'layout.js'], [INPUT_WIRE, 'input.js'], [OBSERVER_WIRE, 'observers.js']]) {
       const rc = this.eval(src, name, false);
       if (rc !== 0) {
         const tasks = this.takeTasks();

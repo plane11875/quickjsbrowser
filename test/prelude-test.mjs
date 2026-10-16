@@ -134,6 +134,7 @@ check('P4d 已 abort 的 signal 立即拒绝', val('globalThis.pre') === 'reject
 
 // P5 queueMicrotask / matchMedia / getComputedStyle / 观测器
 ev('p5.js', 'globalThis.qm=[]; queueMicrotask(()=>qm.push("a")); queueMicrotask(()=>qm.push("b"));');
+check('P5a queueMicrotask waits for the microtask checkpoint',j('globalThis.qm')==='[]',j('globalThis.qm'));pump();
 check('P5 queueMicrotask', j('globalThis.qm') === '["a","b"]', j('globalThis.qm'));
 check('P5b matchMedia 不抛且有 matches', j('matchMedia("(prefers-color-scheme: dark)").matches') === 'true',
   j('matchMedia("(prefers-color-scheme: dark)").matches'));

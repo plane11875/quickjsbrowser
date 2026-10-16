@@ -6,9 +6,12 @@ The default CDP/HTTP viewport is 1024 by 768; larger sizes are opt-in.
 
 ## Select the route before navigation
 
-Direct access is the default. There is no automatic relay fallback. A selected
-proxy applies to documents, redirects, scripts, page fetches, CSS, fonts and images.
-Proxy failure returns an error and never triggers a direct request.
+Direct access is the default. A selected SNI relay is tried first for each origin,
+including redirect destinations. Failed GET/HEAD requests may fall back to native
+direct fetch; a successful direct origin is remembered for five minutes. Aborted
+requests and non-idempotent methods are not replayed. Explicit HTTP CONNECT and
+SOCKS5 proxies keep strict routing. Route counts are available in `/state`;
+`/log` distinguishes relay, fallback and final direct responses.
 
 The default proxy configuration wraps this project's existing self-implemented
 SNI/TLS relay. An IP and port identify the relay endpoint; they do not imply that
@@ -71,7 +74,7 @@ the replacement page. Unsupported Input/DOM commands return errors.
 fixture serving HTML, external CSS/JS and a second page. It checks real geometry,
 DOM and PNG changes after coordinate clicks, link navigation and return, event
 cancellation, asynchronous navigation, old-timer isolation, proxy authentication,
-and no direct fallback. SOCKS5 tests cover fragmented negotiation and authentication.
+and strict routing for explicit HTTP proxies. SNI tests cover safe direct fallback and origin memory. SOCKS5 tests cover fragmented negotiation and authentication.
 Existing native/module/navigation and float/CSS renderer suites also run.
 
 An additional Codespace integration check accessed https://example.com through an
