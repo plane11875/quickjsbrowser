@@ -1,4 +1,4 @@
-// Explicit session routing. A configured proxy is never replaced by a direct request.
+// Proxy parsing/negotiation. Session routing permits safe SNI-only direct fallback.
 const enc = new TextEncoder(), dec = new TextDecoder();
 export function normalizeProxy(input) {
   if (input == null || input === '' || input === 'direct') return null;

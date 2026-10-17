@@ -2,26 +2,26 @@
 
 Cloudflare Workers 上的 QuickJS/WASM 浏览器服务：QuickJS 执行脚本，linkedom 提供 JavaScript DOM，Blitz 负责 HTML/CSS 布局和截图。提供 HTTP API 与 CDP 子集。
 
-## 真实网站截图：linux.do/t/topic/2999210
+## 真实 Worker 验证状态
 
-测试地址：[https://linux.do/t/topic/2999210](https://linux.do/t/topic/2999210)，标题「浅试 pi codemode，可能确实省一点 tokens？」。通过指定 SNI 中继访问，视口 1024×768，显式执行 JavaScript。
+目标：[linux.do/t/topic/2999210](https://linux.do/t/topic/2999210)，标题「浅试 pi codemode，可能确实省一点 tokens？」。通过指定 SNI 中继访问，1024×768，页面 JavaScript 启用。
 
-### 解除源码限制后的实际结果
+**线上完整流程仍未通过，PR #4 保持草稿，尚未合并 main。** 当前部署为 `deca889d-d769-4666-99a5-34d79756b23c`，运行代码 `9e8bb02`。该次真实加载在资源与应用启动阶段触发平台内存超限，CDP continue 超时，尚未完成 A → B → A、点击和返回验收。
 
-512 KiB 单脚本 / 2 MiB 总源码门槛已取消，改用 32 MiB 的总源码内存保护。当前真实站点测试准备了 **14,947,279 字节源码、执行 27 段脚本**；Cloudflare 按独立 Durable Object 统计的**全程累计 CPU 为 23.161496 秒**，超过 10 秒目标。这个数字不是网络等待时间，也不是单条 CDP 消息的耗时。
+Cloudflare 按独立 DO 记录的本次失败尝试累计 CPU 为 **10.709972 秒**，CPU 超限 0、内存超限 2，平台采样的 isolate 峰值 **242,134,549 字节**。这不是完整成功启动的耗时，不能宣称十秒目标达标。
 
-**完整应用仍未启动成功。** 缺少 `CSS` 浏览器对象，且 `document.referrer` 尚未提供，导致 Discourse 主模块报错；第三方 Google、Stripe 脚本在指定中继上握手失败。下面是真实输出，页面停在加载画面。脚本失败不再自动替换成 noscript 正文。
+已实现混合 SNI/直连路由、同一 DO 的有界资源缓存、按需动态导入、补齐当前启动链所需的浏览器能力，以及 QuickJS 源码位置索引、WASI 内存计量和跨导航线性内存复用。14 个本地套件和六个渲染 case 通过；另一个真实 Worker 网络探针确认 Linux.do、Stripe、Google 均可取回 200。局部回归与本地真实资源重放不替代线上完整应用通过。
 
-![解除源码限制后的真实 Worker 截图：应用仍停在加载画面](docs/images/worker-linux-topic-2999210-unrestricted.png)
+实现与复现见[会话缓存及路由说明](docs/browser-cache-routing.md)，完整现状和失败证据见[真实站点报告](docs/real-site-2999210.md)。
 
 <details>
-<summary>查看解除限制前的静态回退截图（旧版，不能代表完整网站运行成功）</summary>
+<summary>历史截图：旧版加载屏与静态回退，均不代表当前完整应用成功</summary>
 
-![旧版静态回退的真实帖子正文截图](docs/images/worker-linux-topic-2999210.png)
+![旧版真实 Worker 加载屏](docs/images/worker-linux-topic-2999210-unrestricted.png)
+
+![更早版本的静态回退](docs/images/worker-linux-topic-2999210.png)
 
 </details>
-
-2026-10-16 已部署 Worker 版本 `7e0c06bf-85fc-499a-9dae-43e17fef3048`，运行代码 `7bb44b5`。详细数据与复现命令见[真实站点测试报告](docs/real-site-2999210.md)。
 
 ## 本次修复
 
@@ -98,8 +98,9 @@ Small page applications can use import maps, real DOM observers and bounded asyn
 Open a CDP session with `?proxy=IP%3Aport`, or send the project-specific command
 `Browser.setProxy({ip, port})` before navigation. This wraps the project's existing
 self-implemented SNI/TLS relay as a browser proxy. The endpoint does not need to
-speak HTTP CONNECT or SOCKS5. Every page resource follows the selected route;
-failures never trigger automatic direct access.
+speak HTTP CONNECT or SOCKS5. SNI requests use the relay first; failed GET/HEAD
+requests may use native direct fetch. Successful direct origins are remembered
+for five minutes. Explicit HTTP CONNECT and SOCKS5 proxies remain strict.
 
 The default viewport is 1024×768. Computed style and geometry query Blitz;
 coordinate mouse events run page handlers and ordinary links navigate.

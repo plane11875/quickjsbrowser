@@ -1,8 +1,8 @@
 import { parse } from 'es-module-lexer/minimal/js';
 
 // The CSP-compatible JS build needs neither eval nor runtime Wasm compilation.
-export function moduleSpecifiers(source) {
-  return [...new Set(parse(source)[0].filter((i) => typeof i.n === 'string' && !i.typeOnly).map((i) => i.n))];
+export function moduleSpecifiers(source, staticOnly = false) {
+  return [...new Set(parse(source)[0].filter((i) => typeof i.n === 'string' && !i.typeOnly && (!staticOnly || i.d === -1)).map((i) => i.n))];
 }
 
 export class ModuleResolver {
@@ -58,4 +58,14 @@ export class ModuleResolver {
     // Browser modules do not implicitly turn bare names into npm/CDN requests.
     return this.urlLike(name) ? spec : null;
   }
+}
+
+// Lexical spans avoid touching comments, strings or import.meta. The native
+// import executes only after the asynchronous host has prepared the module.
+export function prepareDynamicImports(source, base) {
+  const imports=parse(source)[0].filter(i=>i.d>=0).sort((a,b)=>a.ss-b.ss);
+  if(!imports.length)return source;
+  const chunks=[];let cursor=0;
+  for(const i of imports){chunks.push(source.slice(cursor,i.ss),'globalThis.__dynamicImport.bind(null,'+JSON.stringify(base)+')');cursor=i.ss+6;}
+  chunks.push(source.slice(cursor));return chunks.join('');
 }

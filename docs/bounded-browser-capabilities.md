@@ -24,7 +24,7 @@ The browser executes page applications with memory and instruction guardrails. S
 | Script elements | 128 |
 | Script/Promise instruction budget | 30,000 QuickJS interrupt-handler calls, shared across the page |
 | Page task settling | 256 tasks, 32 rounds, 128 microtasks per drain |
-| Timers | bounded one-shot timers up to 1,000 ms; longer timers/intervals are reported as unsupported |
+| Timers | short timers settle during loading; longer timers and intervals are scheduled on the session and isolated from later documents |
 | Render-resource network window | 5,000 ms shared |
 
 Known over-budget script manifests are declined before making any script requests. Response size is checked before reading advertised large bodies and while streaming unadvertised ones. Module compilation has an additional native source-size guard. A JavaScript timeout is not presented as a way to preempt synchronous Wasm compilation: the size checks happen before compilation, and QuickJS's interrupt handler bounds interpreted execution. These are performance policies, not a universal wall-clock guarantee for every native parser, layout operation or upstream condition. Network deadline failures return a clear error rather than waiting indefinitely.
@@ -38,12 +38,14 @@ The existing CSS, float layout and font rendering stay enabled. Render resource 
 - Import-map exact/prefix mappings, scoped mappings, blocked entries, document base URLs and prefix-escape rejection.
 - One resolver in the host registers exact `(referrer, specifier) -> URL` aliases with the native module loader. Browser bare imports do not become speculative npm/CDN fetches.
 - Real linkedom MutationObserver and HTML element constructor identities; document URL/base/cookie accessors, currentScript and readiness transitions.
-- Bounded page fetch and short timers; compiled modules and dependency cycles are resolved from the prefetched graph.
+- Bounded page fetch, asynchronous XMLHttpRequest, Headers and timers; static module dependencies are prepared before execution. Runtime dynamic imports request their own dependency graph and can continue across CDP resource batches.
 - Structured classic/module errors and unhandled Promise rejections, with names, messages, source URLs where available and stacks.
 
 ## Deliberate remaining limitations
 
-Blitz style/layout results are now connected synchronously to the script DOM for computed properties, bounding rectangles and coordinate hit testing. See [interactive session design and proxy usage](session-browser-flow.md). ResizeObserver/IntersectionObserver remain unsupported. Box/client-rect fragments are still simplified. Computed dynamic imports that were not prefetched, long-lived application timers, general async/defer semantics, iframe browsing contexts and full CSSOM integration remain incomplete.
+Blitz style/layout results are now connected synchronously to the script DOM for computed properties, bounding rectangles and coordinate hit testing. See [interactive session design and proxy usage](session-browser-flow.md). ResizeObserver and IntersectionObserver deliver geometry-backed updates for DOM changes and viewport events. CSS.supports delegates to Stylo. HTML fragment parsing, node adoption, focus state and asynchronous MessageChannel are available. Box/client-rect fragments are still simplified; general async/defer semantics, iframe browsing contexts, transferable MessagePorts and full CSSOM integration remain incomplete.
+
+Completed, fresh GET resources share a bounded 32 MiB LRU response cache across navigations in the same DO. Authentication/request variants are partitioned; no-store, no-cache, Vary: *, Set-Cookie and redirected aliases are not retained. New documents receive fresh VMs and DOMs; DO reset/restart drops this cache.
 
 Multi-megabyte Discourse sources now reach compilation and execution. Full application compatibility remains unproven: actual real-site results and CPU measurements are recorded in [the linux.do test report](real-site-2999210.md). The old 512 KiB/2 MiB defaults were policy choices, not measured Worker limits.
 

@@ -10,11 +10,11 @@ import {normalizeProxy,publicProxy,negotiateProxy} from '../src/net/proxy.js';
 import {relayFetch} from '../src/net/relay.js';
 const val=(s,code)=>{const r=s.engine.callGlobal('eval',code);assert.ok(r.ok,JSON.stringify(r));return r.value;};
 const fresh=()=>new QjsSession({waitUntil(p){p.catch(()=>{});} },{});
-const fixture=`<!doctype html><html><head><link rel="stylesheet" href="/style.css"><script src="/app.js"></script></head><body><button id="change">Change</button><a id="next" href="/next">Next page</a><div id="box">before</div></body></html>`;
+const fixture=`<!doctype html><html><head><link rel="stylesheet" href="/style.css"><script src="/app.js"></script><script type="module">globalThis.loadLate=()=>import("/late.js")</script></head><body><button id="change">Change</button><a id="next" href="/next">Next page</a><div id="box">before</div></body></html>`;
 const css=`body{margin:0;font-family:sans-serif;background:#eee}button,a{display:block;width:180px;height:40px;margin:10px;background:#336699;color:white}#box{width:120px;height:50px;background:rgb(255,0,0)}#box.changed{width:240px;height:80px;background:rgb(0,128,0)}`;
 const app=`document.addEventListener('DOMContentLoaded',()=>{document.querySelector('#change').addEventListener('click',()=>{const b=document.querySelector('#box');b.className='changed';b.textContent='after';});setTimeout(()=>{globalThis.startupTimer=true},80);globalThis.initialWidth=document.querySelector('#box').getBoundingClientRect().width;globalThis.initialColor=getComputedStyle(document.querySelector('#box')).backgroundColor;});`;
 const paths=[];
-const origin=http.createServer((req,res)=>{paths.push(req.url);res.setHeader('content-type',req.url.endsWith('.css')?'text/css':req.url.endsWith('.js')?'application/javascript':'text/html');res.end(req.url==='/style.css'?css:req.url==='/app.js'?app:req.url==='/next'?'<html><head><title>Next</title></head><body><h1 id="arrived">Arrived</h1><a id="back" href="/">Back</a></body></html>':fixture);});
+const origin=http.createServer((req,res)=>{paths.push(req.url);res.setHeader('content-type',req.url.endsWith('.css')?'text/css':req.url.endsWith('.js')?'application/javascript':'text/html');res.end(req.url==='/late.js'?`export default 'late-module';`:req.url==='/style.css'?css:req.url==='/app.js'?app:req.url==='/next'?'<html><head><title>Next</title></head><body><h1 id="arrived">Arrived</h1><a id="back" href="/">Back</a></body></html>':fixture);});
 await new Promise(r=>origin.listen(0,'127.0.0.1',r));
 const tunnels=[],sockets=new Set();
 const proxy=http.createServer();
@@ -43,6 +43,7 @@ try{
  const nav=await command('Page.navigate',{url:'http://fixture.invalid/'});assert.ok(!nav.errorText,JSON.stringify(nav));
  assert.equal(s.pageStatus.status,'executed',JSON.stringify(s.pageStatus));
  assert.equal(val(s,'startupTimer'),true);assert.equal(val(s,'initialWidth'),120);assert.ok(val(s,'initialColor').includes('255'),val(s,'initialColor'));
+ const late=await command('Runtime.evaluate',{expression:`loadLate().then(m=>m.default)`});assert.equal(late.result.value,'late-module','CDP await must service dynamic imports without queue deadlock');
  const sized=await command('Runtime.evaluate',{expression:`document.querySelector('#box').style.width='50vw';document.querySelector('#box').getBoundingClientRect().width`});assert.equal(sized.result.value,240);
  await command('Emulation.setDeviceMetricsOverride',{width:640,height:400});
  const resized=await command('Runtime.evaluate',{expression:`document.querySelector('#box').getBoundingClientRect().width`});assert.equal(resized.result.value,320);
@@ -57,6 +58,9 @@ try{
  await click('#next');assert.equal(s.url,'http://fixture.invalid/next');assert.equal(val(s,`document.querySelector('#arrived').textContent`),'Arrived');
  const shot3=(await command('Page.captureScreenshot')).data;fs.writeFileSync('.cache/browser-next/next-page.png',Buffer.from(shot3,'base64'));assert.notEqual(shot2,shot3);assert.ok(frames.filter(f=>f.method==='Page.frameNavigated').length>=2);
  await command('Runtime.evaluate',{expression:`document.querySelector('#back').click()`});assert.equal(s.url,'http://fixture.invalid/');
+ const history=await command('Page.getNavigationHistory');assert.ok(history.entries.length>=3,JSON.stringify(history));
+ await command('Page.navigateToHistoryEntry',{entryId:history.entries[1].id});assert.equal(s.url,'http://fixture.invalid/next');
+ await command('Page.navigateToHistoryEntry',{entryId:history.entries[0].id});assert.equal(s.url,'http://fixture.invalid/');assert.equal((await command('Page.getNavigationHistory')).entries.length,history.entries.length,'history traversal must preserve forward entries');
  await command('Runtime.evaluate',{expression:`setTimeout(()=>{location.href='/next'},30);undefined`});
  for(let i=0;i<100&&s.url!=='http://fixture.invalid/next';i++)await new Promise(r=>setTimeout(r,10));
  await c.chain;await c.sendChain;assert.equal(s.url,'http://fixture.invalid/next','timer navigation must complete without another CDP command');
@@ -70,7 +74,16 @@ try{
  assert.ok(!s.log.join('\n').includes('secret'));c.close();s.engine.dispose();
  console.log('PASS actual WebSocket CDP with explicit HTTP proxy routes document/CSS/JS/navigation; real CSS geometry, coordinate clicks, DOM updates, changed screenshots, link navigation and return');
  const broken=fresh();broken.configureProxy({type:'http',host:'127.0.0.1',port:1});let direct=0;const old=globalThis.fetch;globalThis.fetch=()=>{direct++;throw new Error('DIRECT MUST NOT RUN');};try{await assert.rejects(()=>broken.smartFetch('http://fixture.invalid/',{signal:AbortSignal.timeout(100)}));assert.equal(direct,0);}finally{globalThis.fetch=old;}
- console.log('PASS proxy failure never falls back to direct access');
+ console.log('PASS explicit HTTP proxy failure stays strict');
+ const mixed=fresh();mixed.configureProxy('127.0.0.1:1');let attempts=0;
+ globalThis.fetch=async()=>{attempts++;return new Response('direct',{status:200});};
+ try{
+   assert.equal(await (await mixed.smartFetch('https://outside.test/a')).text(),'direct');
+   await mixed.smartFetch('https://outside.test/b');assert.equal(attempts,2);assert.equal(mixed.routeStats.relay,1);assert.equal(mixed.routeStats.fallback,1);
+   await assert.rejects(()=>mixed.smartFetch('https://outside.test/action',{method:'POST',body:'x'}));assert.equal(attempts,2);
+   const abort=new AbortController();abort.abort();await assert.rejects(()=>mixed.smartFetch('https://another.test/a',{signal:abort.signal}));assert.equal(attempts,2);
+ }finally{globalThis.fetch=old;}
+ console.log('PASS SNI fallback, successful origin memory, abort propagation and no POST replay');
  // The real protocol implementation consumes fragmented replies and preserves post-handshake bytes.
  for(const auth of [false,true]){
   const writes=[],packets=[new Uint8Array([5]),new Uint8Array([auth?2:0]),...(auth?[new Uint8Array([1,0])]:[]),new Uint8Array([5,0,0,3,1,120,0,80,99])];

@@ -226,10 +226,11 @@ static JSModuleDef *module_loader2(JSContext *ctx, const char *module_name,
         }
     }
     const char *src = NULL;
+    int source_index = -1;
     int kind = SRC_KIND_JS;
     for (int i = 0; i < S.nsrc; i++) {
         if (strcmp(S.sources[i].url, module_name) == 0) {
-            src = S.sources[i].src;
+            src = S.sources[i].src;source_index=i;
             kind = S.sources[i].kind;
             break;
         }
@@ -277,6 +278,9 @@ static JSModuleDef *module_loader2(JSContext *ctx, const char *module_name,
         S.modcache[S.nmod].url = strdup(module_name);
         S.modcache[S.nmod].m = m;
         S.nmod++;
+        /* The compiled module owns its bytecode/debug source. Keeping the
+           transport copy duplicates every bundle until navigation. */
+        if(source_index>=0){free(S.sources[source_index].src);S.sources[source_index].src=NULL;}
     }
     return m;
 }
@@ -690,4 +694,14 @@ void qjs_free(void) {
     S.outbox_dropped = 0;
     free(S.input); S.input = NULL; S.input_cap = 0;
     free(S.out_buf); S.out_buf = NULL; S.out_cap = 0;
+}
+
+__attribute__((export_name("qjs_memory_usage")))
+uint64_t qjs_memory_usage(void) {
+    JSMemoryUsage usage;
+    JS_ComputeMemoryUsage(S.rt,&usage);
+    size_t sources=0;for(int i=0;i<S.nsrc;i++)if(S.sources[i].src)sources+=strlen(S.sources[i].src);
+    char out[256];
+    int len=snprintf(out,sizeof(out),"{\"allocatedBytes\":%lld,\"usedBytes\":%lld,\"objects\":%lld,\"functions\":%lld,\"sourceBytes\":%zu}",(long long)usage.malloc_size,(long long)usage.memory_used_size,(long long)usage.obj_count,(long long)usage.js_func_count,sources);
+    return pack_out(out,len);
 }

@@ -1,0 +1,12 @@
+[
+  [
+    "    at f0 (source-position-fixture.js:1:319)",
+    "    at f1 (source-position-fixture.js:1:654)",
+    "    at f5 (source-position-fixture.js:2:654)",
+    "    at f31 (source-position-fixture.js:8:1328)",
+    "    at f63 (source-position-fixture.js:16:1328)"
+  ],
+  [
+    "    at boundary (source-position-fixture.js:1:262085)"
+  ]
+]
